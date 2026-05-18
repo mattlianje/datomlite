@@ -45,30 +45,30 @@ Try it in your REPL:
 - [Keys and uniqueness](#keys-and-uniqueness)
 - [Refs and cardinality](#refs-and-cardinality)
 - [Optional fields](#optional-fields)
-- [Tx blocks](#tx-blocks)
-- [Listen](#listen)
-- [Predicates](#predicates)
+- [Tx blocks](#tx-blocks-batch-multiple-ops)
+- [Listen](#listen-for-db-changes)
+- [Predicates](#predicates-as-index-probes)
 - [Queries](#queries)
   - [For-comprehension joins](#for-comprehension-joins)
   - [Typed queries](#typed-queries)
   - [Named-tuple rows](#named-tuple-rows)
   - [Aggregations](#aggregations)
   - [Sort and paging](#sort-and-paging)
-- [Pull](#pull)
+- [Pull](#pull-to-shape-query-results)
   - [Reverse refs](#reverse-refs)
-- [Time travel](#time-travel)
-- [History](#history)
-- [Diff](#diff)
-- [Negation](#negation)
-- [Existential subgoals](#existential-subgoals)
+- [Time travel](#time-travel-through-past-states)
+- [History](#history-of-every-entity)
+- [Diff](#diff-two-databases)
+- [Negation](#negation-as-anti-join)
+- [Existential subgoals](#existential-subgoals-semi-joins)
 - [Window functions](#window-functions)
 - [Rules](#rules)
   - [Self-ref closure (`Rule.reaches`)](#self-ref-closure-rulereaches)
   - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
   - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
-- [Persistence](#persistence)
-- [Sharing the db](#sharing-the-db)
-- [Debug](#debug)
+- [Persistence](#persistence-and-custom-backends)
+- [Sharing the db](#sharing-the-db-across-threads)
+- [Debug](#debug-pretty-print-state-and-log)
 - [Build / Contribute](#build--contribute)
 
 ## Quick start
@@ -334,7 +334,7 @@ db.query[Employee] { e =>
 // Vector(("m@x.io", "Matt"))
 ```
 
-## Tx blocks
+## Tx blocks: batch multiple ops
 You'll often want to batch transaction that are to run sequentially, and **datomlite** supports this
 ```
 db.tx { b => ... }            mixed add/retract/upsert in one tx
@@ -378,7 +378,7 @@ this carries
 tx, time, adds, retracts, addedEids
 ```
 
-## Listen
+## Listen for db changes
 You often want to respond to changes made to your datastore, which is why datomlite has `.listen`.
 
 The callback fires after each successful commit with the `TxReport` (tx id, adds, retracts, addedEids). Reads inside see the just-committed state. Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
@@ -392,7 +392,7 @@ db.listen { rep =>
 > Snapshots and `withTx` branches (see [Time travel](#time-travel)) are read-only, `listen` is a no-op
 
 
-## Predicates
+## Predicates as index probes
 You will have noticed datomlite operations with predicate feel like operations on plain collections.
 
 Under the hood, when you use predicates, **datomlite**'s macros lift plain equality to index-probed queries (so you aren't scanning all your triples)
@@ -586,7 +586,7 @@ db.where[Employee].orderBy(_.salary).limit(2).run
 db.where[Order].orderByDesc(_.price).offset(10).limit(10).run
 ```
 
-## Pull
+## Pull to shape query results
 Pull is for *shaping* results. The closure picks the fields you want and walks refs to pull sub-shapes, all against a single snapshot. 
 
 This is especially handy when you want a nested output without writing a join, or to skip materializing heavy entities just to read a few fields.
@@ -657,7 +657,7 @@ val triples = db.query[Department, Employee, Skill] { (d, e, s) =>
 // Vector(("Matt", "Scala"), ("Matt", "Haskell"), ("Alice", "Scala"))
 ```
 
-## Time travel
+## Time travel through past states
 datomlite lets you (for a given "current" DB), read any past state or branch off a speculative transaction.
 
 In both cases the live `Db` remains untouched
@@ -697,7 +697,7 @@ whatIf.where[Employee].count      // 6, includes Eve
 db.where[Employee].count          // 5, live untouched
 ```
 
-## History
+## History of every entity
 You can call `.log` on any datomlite to get the full history of triples... or `.history`/`.historyOf` to get the history of
 specific entities.
 
@@ -726,7 +726,7 @@ db.history(rep1.addedEids.head)
 // full assert/retract trail for that eid
 ```
 
-## Diff
+## Diff two databases
 When your database is a value, you can do fun things like diff it against another database, or the same database
 with some speculative transactions that have been applied to it.
 
@@ -749,7 +749,7 @@ val whatIf = db.withTx(Tx.add(Employee("e@x.io", "Eve", eng, 100_000L)))
 db.diff(whatIf).added   // datoms Eve would add
 ```
 
-## Negation
+## Negation as anti-join
 With **datomlite** `not(c)` is the "anti-join". A row passes if and only if substituting it into the negated subgoal produces no matches.
 
 ```scala
@@ -761,7 +761,7 @@ db.query[Employee, Order] { (e, o) =>
 
 `not(...)` only sits in the top-level conjunction. No `||`, no `not(not(...))`. Every variable inside `not` must be scoped by the outer positive part (Datalog-safe negation).
 
-## Existential subgoals
+## Existential subgoals (semi-joins)
 
 You often ask yourself: "does at least one such row exist?", but don't want to bring the matched
 row into your output like in a semi-join.
@@ -1048,7 +1048,7 @@ db.query[Person, Person] { (x, y) =>
 // Vector()
 ```
 
-## Persistence
+## Persistence and custom backends
 `FileStorage` ships for JVM and Native. Restart with the same path, the log replays.
 
 ```scala
@@ -1077,7 +1077,7 @@ trait Storage:
 > [!WARNING]
 > Durability is best-effort. A crash between the in-memory CAS and the on-disk append loses that one tx on replay. But, in a datascript-ish way you can implement `Storage` with `fsync` semantics if you need stronger guarantees.
 
-## Sharing the db
+## Sharing the db across threads
 `Db` is a plain value, pass it anywhere. Concurrent reads and writes are safe.
 
 ```scala
@@ -1091,7 +1091,7 @@ def countAll(using db: Db): Long = db.where[Employee].count
 
 `db.snapshot` freezes current state. `db.withTx(...)` is a what-if branch. Both are read-only (see [Time travel](#time-travel)).
 
-## Debug
+## Debug: pretty-print state and log
 Print the live state or the raw log to stdout.
 
 ```
