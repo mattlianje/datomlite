@@ -6,7 +6,7 @@ val scalaNativeVersion = "0.5.9"
 val scalaJSVersion     = "1.20.2"
 
 trait DatomlitePublishModule extends SonatypeCentralPublishModule {
-  def publishVersion = "0.0.1"
+  def publishVersion = "0.1.0"
   def artifactName   = "datomlite"
 
   def pomSettings = PomSettings(
