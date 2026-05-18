@@ -766,10 +766,10 @@ db.query[Employee, Order] { (e, o) =>
 
 ## Existential subgoals (semi-joins)
 
-You often ask yourself: "does at least one such row exist?", but don't want to bring the matched
-row into your output like in a semi-join.
+When writing queries, you often ask yourself: "does at least one such row exist?", but don't want to bring the matched
+row into your output (like in a semi-join).
 
-To this end **datomlite** queries can have `exists[A] { row => ... }` binds a fresh row scoped to the constraint body, without projecting it. Reads as "some `A` exists such that the body holds".
+To this end **datomlite** queries can have `exists[A] { row => ... }` which binds a fresh row scoped to the constraint body, without projecting it.
 
 ```scala
 /* orders whose buyer exists as a registered Employee */
