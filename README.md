@@ -26,11 +26,6 @@
 "xyz.matthieucourt" %% "datomlite" % "0.0.1"
 ```
 
-REPL:
-```
-make repl
-```
-
 All you need:
 ```scala
 import datomlite._
