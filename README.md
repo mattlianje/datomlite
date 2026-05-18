@@ -72,16 +72,15 @@ Try it in your REPL:
 - [Build / Contribute](#build--contribute)
 
 ## Quick start
-The whole surface, in one snippet:
 
 ```scala
 import datomlite._
 
-/* Just derive `Entity` on your case classes */
-case class Person(@key email: String, name: String) derives Entity
-
 /* Create an empty db */
 val db = Db()
+
+/* Just derive `Entity` on your case classes */
+case class Person(@key email: String, name: String) derives Entity
 
 /* Easy, threadsafe transactions */
 db.add(Person("m@x.io", "Matt"), Person("a@x.io", "Alice"))
