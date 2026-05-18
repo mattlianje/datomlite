@@ -23,7 +23,7 @@
 - Implement `Storage` and bring your own backend
 
 ```scala
-"xyz.matthieucourt" %% "datomlite" % "0.0.1"
+"xyz.matthieucourt" %% "datomlite" % "0.1.0"
 ```
 
 All you need:
