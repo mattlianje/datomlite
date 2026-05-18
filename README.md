@@ -88,7 +88,10 @@ db.add(Person("m@x.io", "Matt"), Person("a@x.io", "Alice"))
 
 /* Your db feels like a collection */
 db.where[Person].run
+db.where[Person].size
 db.where[Person](_.email == "m@x.io").one
+db.where[Person].filter(_.name.startsWith("M")).take(5).toList
+for p <- db.where[Person] do println(p.name)
 
 db.upsert(Person("m@x.io", "Matthieu"))
 
