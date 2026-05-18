@@ -31,6 +31,11 @@ All you need:
 import datomlite._
 ```
 
+Try it in your REPL:
+```
+ scala-cli repl --dep xyz.matthieucourt::datomlite:latest.release
+```
+
 ## Contents
 - [Quick start](#quick-start)
 - [FAQ](#faq)
