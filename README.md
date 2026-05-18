@@ -14,10 +14,11 @@
 
 - Zero deps, pure Scala 3.7+
 - Cross-platform (JVM, JS, Native)
-- Case classes are "the schema" (no EDN, no DDL)
+- Case classes are "the schema"
 - Append-only log: every past state stays queryable
 - Typed queries, compile-time checked
-- Datalog joins, refs, aggregations, window functions, recursive rules
+- Datalog that feels like plain Scala (no EDN, no DDL)
+     - Joins, refs, aggregations, window functions, recursive rules
 - Easy time-travel and speculative transactions
 - Named-tuple query results
 - Implement `Storage` and bring your own backend
