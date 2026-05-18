@@ -98,7 +98,7 @@ db.retractWhere[Person](_.email == "m@x.io")
 ## FAQ
 
 **Why datomlite?**<br>
-First, for good-spirited fun and happy hacking. Second, I have long yearned for a datastore "as-a-value" I can drop into my processes and throw my case classes
+First, for good-spirited fun and happy hacking. Second, I have long wanted a datastore "as-a-value" I can drop into my processes and throw my case classes
 at, without first carving EDN, registering attributes, or learning a finicky ersatz Datalog DSL.
 
 **What is it under the hood?**<br>
