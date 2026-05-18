@@ -396,7 +396,7 @@ db.listen { rep =>
 
 
 ## Predicates as index probes
-You will have noticed datomlite operations with predicate feel like operations on plain collections.
+You will have noticed **datomlite** operations with predicates feel like operations on plain collections.
 
 Under the hood, when you use predicates, **datomlite**'s macros lift plain equality to index-probed queries (so you aren't scanning all your triples)
 
