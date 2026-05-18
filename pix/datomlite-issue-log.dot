@@ -1,0 +1,38 @@
+digraph issue_log {
+  node [fontname="Helvetica"];
+
+  log [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="5"><b>log</b></td></tr>
+      <tr>
+        <td><b>tx</b></td>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+        <td><b>op</b></td>
+      </tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#1</td><td bgcolor="#e6ffe6" align="left">User/email</td>    <td bgcolor="#e6ffe6" align="left">"m@x.io"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#1</td><td bgcolor="#e6ffe6" align="left">User/name</td>     <td bgcolor="#e6ffe6" align="left">"Matt"</td>                   <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#2</td><td bgcolor="#e6ffe6" align="left">User/email</td>    <td bgcolor="#e6ffe6" align="left">"a@x.io"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#2</td><td bgcolor="#e6ffe6" align="left">User/name</td>     <td bgcolor="#e6ffe6" align="left">"Alice"</td>                  <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/id</td>      <td bgcolor="#e6ffe6" align="left">"BUG-1"</td>                  <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/title</td>   <td bgcolor="#e6ffe6" align="left">"login button does nothing"</td><td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"open"</td>                   <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/labels</td>  <td bgcolor="#e6ffe6" align="left">"bug"</td>                    <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t2</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/assignee</td><td bgcolor="#e6ffe6" align="left">#2</td>                       <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t2</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/labels</td>  <td bgcolor="#e6ffe6" align="left">"p1"</td>                    <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#ffe0e0" align="left">t3</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/assignee</td><td bgcolor="#ffe0e0" align="left">#2</td>                       <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t3</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/assignee</td><td bgcolor="#e6ffe6" align="left">#1</td>                       <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#ffe0e0" align="left">t3</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/status</td>  <td bgcolor="#ffe0e0" align="left">"open"</td>                   <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t3</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"in-progress"</td>            <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#ffe0e0" align="left">t4</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/labels</td>  <td bgcolor="#ffe0e0" align="left">"p1"</td>                    <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#ffe0e0" align="left">t4</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/status</td>  <td bgcolor="#ffe0e0" align="left">"in-progress"</td>            <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t4</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"closed"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+    </table>
+  >];
+}

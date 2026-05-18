@@ -1,0 +1,79 @@
+digraph datoms_and_live_after_retract {
+  rankdir=LR;
+  node [fontname="Helvetica"];
+
+  log [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="4"><b>log</b></td></tr>
+      <tr>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+        <td><b>op</b></td>
+      </tr>
+      <tr>
+        <td bgcolor="#e6ffe6" align="left">#1</td>
+        <td bgcolor="#e6ffe6" align="left">Fighter/fName</td>
+        <td bgcolor="#e6ffe6" align="left">"Jorge"</td>
+        <td bgcolor="#e6ffe6" align="left">+</td>
+      </tr>
+      <tr>
+        <td bgcolor="#e6ffe6" align="left">#1</td>
+        <td bgcolor="#e6ffe6" align="left">Fighter/lName</td>
+        <td bgcolor="#e6ffe6" align="left">"Masvidal"</td>
+        <td bgcolor="#e6ffe6" align="left">+</td>
+      </tr>
+      <tr>
+        <td bgcolor="#e6ffe6" align="left">#1</td>
+        <td bgcolor="#e6ffe6" align="left">Fighter/nickname</td>
+        <td bgcolor="#e6ffe6" align="left">"Street Judas"</td>
+        <td bgcolor="#e6ffe6" align="left">+</td>
+      </tr>
+      <tr>
+        <td bgcolor="#e6ffe6" align="left">#2</td>
+        <td bgcolor="#e6ffe6" align="left">Fighter/fName</td>
+        <td bgcolor="#e6ffe6" align="left">"Jet"</td>
+        <td bgcolor="#e6ffe6" align="left">+</td>
+      </tr>
+      <tr>
+        <td bgcolor="#e6ffe6" align="left">#2</td>
+        <td bgcolor="#e6ffe6" align="left">Fighter/lName</td>
+        <td bgcolor="#e6ffe6" align="left">"Li"</td>
+        <td bgcolor="#e6ffe6" align="left">+</td>
+      </tr>
+      <tr>
+        <td bgcolor="#ffe0e0" align="left">#1</td>
+        <td bgcolor="#ffe0e0" align="left">Fighter/fName</td>
+        <td bgcolor="#ffe0e0" align="left">"Jorge"</td>
+        <td bgcolor="#ffe0e0" align="left">−</td>
+      </tr>
+      <tr>
+        <td bgcolor="#ffe0e0" align="left">#1</td>
+        <td bgcolor="#ffe0e0" align="left">Fighter/lName</td>
+        <td bgcolor="#ffe0e0" align="left">"Masvidal"</td>
+        <td bgcolor="#ffe0e0" align="left">−</td>
+      </tr>
+      <tr>
+        <td bgcolor="#ffe0e0" align="left">#1</td>
+        <td bgcolor="#ffe0e0" align="left">Fighter/nickname</td>
+        <td bgcolor="#ffe0e0" align="left">"Street Judas"</td>
+        <td bgcolor="#ffe0e0" align="left">−</td>
+      </tr>
+    </table>
+  >];
+
+  live [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="3"><b>projection</b></td></tr>
+      <tr>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+      </tr>
+      <tr><td align="left">#2</td><td align="left">Fighter/fName</td><td align="left">"Jet"</td></tr>
+      <tr><td align="left">#2</td><td align="left">Fighter/lName</td><td align="left">"Li"</td></tr>
+    </table>
+  >];
+
+  log -> live;
+}

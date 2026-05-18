@@ -1,0 +1,15 @@
+out/
+.bsp/
+.metals/
+.scala-build/
+
+.vscode/
+.idea/
+
+.DS_Store
+
+*.swp
+*.tmp
+*~
+
+bundles/

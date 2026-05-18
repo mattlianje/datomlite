@@ -1,0 +1,69 @@
+package build
+import mill._, scalalib._, scalanativelib._, scalajslib._, publish._
+
+val scalaVersions      = Seq("3.7.3")
+val scalaNativeVersion = "0.5.9"
+val scalaJSVersion     = "1.20.2"
+
+trait DatomlitePublishModule extends SonatypeCentralPublishModule {
+  def publishVersion = "0.0.1"
+  def artifactName   = "datomlite"
+
+  def pomSettings = PomSettings(
+    description = "Tiny embedded Datomic-style DB for Scala 3 (JVM/JS/Native)",
+    organization = "xyz.matthieucourt",
+    url = "https://github.com/mattlianje/datomlite",
+    licenses = Seq(License.`Apache-2.0`),
+    versionControl = VersionControl.github("mattlianje", "datomlite"),
+    developers = Seq(
+      Developer("mattlianje", "Matthieu Court", "https://github.com/mattlianje")
+    )
+  )
+}
+
+trait DatomliteSourceModule extends CrossScalaModule {
+  def datomliteRoot = Task.Source(moduleDir / os.up)
+  def platformDirs: Seq[String]
+
+  override def sources = Task {
+    val base = datomliteRoot().path
+    PathRef(base / "src") +: platformDirs.map(d => PathRef(base / s"src-$d"))
+  }
+
+  def testSources = Task {
+    val base = datomliteRoot().path / "test"
+    PathRef(base / "src") +: platformDirs.map(d => PathRef(base / s"src-$d"))
+  }
+}
+
+object datomlite extends Module {
+
+  object jvm      extends Cross[JvmModule](scalaVersions)
+  trait JvmModule extends DatomliteSourceModule with DatomlitePublishModule {
+    def platformDirs = Seq("jvm-native")
+    object test extends ScalaTests with TestModule.Munit {
+      def mvnDeps          = Seq(mvn"org.scalameta::munit:1.1.1")
+      override def sources = JvmModule.this.testSources
+    }
+  }
+
+  object js      extends Cross[JsModule](scalaVersions)
+  trait JsModule extends DatomliteSourceModule with ScalaJSModule with DatomlitePublishModule {
+    def platformDirs   = Seq("js")
+    def scalaJSVersion = build.scalaJSVersion
+    object test extends ScalaJSTests with TestModule.Munit {
+      def mvnDeps          = Seq(mvn"org.scalameta::munit::1.1.1")
+      override def sources = JsModule.this.testSources
+    }
+  }
+
+  object native      extends Cross[NativeModule](scalaVersions)
+  trait NativeModule extends DatomliteSourceModule with ScalaNativeModule with DatomlitePublishModule {
+    def platformDirs       = Seq("jvm-native")
+    def scalaNativeVersion = build.scalaNativeVersion
+    object test extends ScalaNativeTests with TestModule.Munit {
+      def mvnDeps          = Seq(mvn"org.scalameta::munit::1.1.1")
+      override def sources = NativeModule.this.testSources
+    }
+  }
+}

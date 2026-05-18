@@ -1,0 +1,11 @@
+digraph hierarchy {
+  node [shape=box, fontname="Helvetica"];
+
+  "Napoléon" -> "Davout";
+  "Napoléon" -> "Ney";
+  "Napoléon" -> "Murat";
+  "Davout"   -> "Friant";
+  "Davout"   -> "Gudin";
+  "Ney"      -> "Marchand";
+  "Murat"    -> "Lasalle";
+}

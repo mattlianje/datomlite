@@ -1,0 +1,20 @@
+digraph upstream {
+  node [shape=box, fontname="Helvetica"];
+
+  "Napoléon" [color=red, fontcolor=red];
+  "Davout";
+  "Ney";
+  "Murat"    [color=red, fontcolor=red];
+  "Friant";
+  "Gudin";
+  "Marchand";
+  "Lasalle"  [color=red, fontcolor=red];
+
+  "Napoléon" -> "Davout";
+  "Napoléon" -> "Ney";
+  "Napoléon" -> "Murat"   [color=red];
+  "Davout"   -> "Friant";
+  "Davout"   -> "Gudin";
+  "Ney"      -> "Marchand";
+  "Murat"    -> "Lasalle" [color=red];
+}

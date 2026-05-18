@@ -1,0 +1,13 @@
+digraph roads {
+  layout=neato;
+  overlap=scale;
+  splines=true;
+  node [shape=circle, fontname="Helvetica", penwidth=0.5, fixedsize=true, width=0.6];
+  edge [penwidth=0.5, len=0.7, arrowsize=0.7];
+
+  PAR -> LYO;
+  LYO -> MAR;
+  MAR -> PAR;
+  LYO -> NCE;
+  PAR -> BOR;
+}

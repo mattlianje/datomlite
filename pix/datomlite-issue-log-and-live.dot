@@ -1,0 +1,61 @@
+digraph issue_log_and_live {
+  rankdir=LR;
+  node [fontname="Helvetica"];
+
+  log [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="5"><b>log</b></td></tr>
+      <tr>
+        <td><b>tx</b></td>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+        <td><b>op</b></td>
+      </tr>
+
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t0</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">User/email</font></td>    <td bgcolor="#f2f2f2" align="left"><font color="#888888">"m@x.io"</font></td>                 <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t0</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">User/name</font></td>     <td bgcolor="#f2f2f2" align="left"><font color="#888888">"Matt"</font></td>                   <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t0</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#2</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">User/email</font></td>    <td bgcolor="#f2f2f2" align="left"><font color="#888888">"a@x.io"</font></td>                 <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t0</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#2</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">User/name</font></td>     <td bgcolor="#f2f2f2" align="left"><font color="#888888">"Alice"</font></td>                  <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/id</font></td>      <td bgcolor="#f2f2f2" align="left"><font color="#888888">"BUG-1"</font></td>                  <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/title</font></td>   <td bgcolor="#f2f2f2" align="left"><font color="#888888">"login button does nothing"</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/status</font></td>  <td bgcolor="#f2f2f2" align="left"><font color="#888888">"open"</font></td>                   <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t1</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/labels</font></td>  <td bgcolor="#f2f2f2" align="left"><font color="#888888">"bug"</font></td>                    <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t2</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/assignee</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#2</font></td>                       <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+      <tr><td bgcolor="#f2f2f2" align="left"><font color="#888888">t2</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">#3</font></td><td bgcolor="#f2f2f2" align="left"><font color="#888888">Issue/labels</font></td>  <td bgcolor="#f2f2f2" align="left"><font color="#888888">"p1"</font></td>                    <td bgcolor="#f2f2f2" align="left"><font color="#888888">+</font></td></tr>
+
+      <tr><td bgcolor="#ffe0e0" align="left">t3</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/assignee</td><td bgcolor="#ffe0e0" align="left">#2</td>                       <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t3</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/assignee</td><td bgcolor="#e6ffe6" align="left">#1</td>                       <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#ffe0e0" align="left">t3</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/status</td>  <td bgcolor="#ffe0e0" align="left">"open"</td>                   <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t3</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"in-progress"</td>            <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#ffe0e0" align="left">t4</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/labels</td>  <td bgcolor="#ffe0e0" align="left">"p1"</td>                    <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#ffe0e0" align="left">t4</td><td bgcolor="#ffe0e0" align="left">#3</td><td bgcolor="#ffe0e0" align="left">Issue/status</td>  <td bgcolor="#ffe0e0" align="left">"in-progress"</td>            <td bgcolor="#ffe0e0" align="left">−</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t4</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"closed"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+    </table>
+  >];
+
+  live [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="3"><b>live projection at t4</b></td></tr>
+      <tr>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+      </tr>
+      <tr><td align="left">#1</td><td align="left">User/email</td>    <td align="left">"m@x.io"</td></tr>
+      <tr><td align="left">#1</td><td align="left">User/name</td>     <td align="left">"Matt"</td></tr>
+      <tr><td align="left">#2</td><td align="left">User/email</td>    <td align="left">"a@x.io"</td></tr>
+      <tr><td align="left">#2</td><td align="left">User/name</td>     <td align="left">"Alice"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/id</td>      <td align="left">"BUG-1"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/title</td>   <td align="left">"login button does nothing"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/status</td>  <td align="left">"closed"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/assignee</td><td align="left">#1</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/labels</td>  <td align="left">"bug"</td></tr>
+    </table>
+  >];
+
+  log -> live [label="fold"];
+}

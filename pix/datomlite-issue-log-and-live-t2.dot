@@ -1,0 +1,53 @@
+digraph issue_log_and_live_t2 {
+  rankdir=LR;
+  node [fontname="Helvetica"];
+
+  log [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="5"><b>log</b></td></tr>
+      <tr>
+        <td><b>tx</b></td>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+        <td><b>op</b></td>
+      </tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#1</td><td bgcolor="#e6ffe6" align="left">User/email</td>    <td bgcolor="#e6ffe6" align="left">"m@x.io"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#1</td><td bgcolor="#e6ffe6" align="left">User/name</td>     <td bgcolor="#e6ffe6" align="left">"Matt"</td>                   <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#2</td><td bgcolor="#e6ffe6" align="left">User/email</td>    <td bgcolor="#e6ffe6" align="left">"a@x.io"</td>                 <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t0</td><td bgcolor="#e6ffe6" align="left">#2</td><td bgcolor="#e6ffe6" align="left">User/name</td>     <td bgcolor="#e6ffe6" align="left">"Alice"</td>                  <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/id</td>      <td bgcolor="#e6ffe6" align="left">"BUG-1"</td>                  <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/title</td>   <td bgcolor="#e6ffe6" align="left">"login button does nothing"</td><td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/status</td>  <td bgcolor="#e6ffe6" align="left">"open"</td>                   <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t1</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/labels</td>  <td bgcolor="#e6ffe6" align="left">"bug"</td>                    <td bgcolor="#e6ffe6" align="left">+</td></tr>
+
+      <tr><td bgcolor="#e6ffe6" align="left">t2</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/assignee</td><td bgcolor="#e6ffe6" align="left">#2</td>                       <td bgcolor="#e6ffe6" align="left">+</td></tr>
+      <tr><td bgcolor="#e6ffe6" align="left">t2</td><td bgcolor="#e6ffe6" align="left">#3</td><td bgcolor="#e6ffe6" align="left">Issue/labels</td>  <td bgcolor="#e6ffe6" align="left">"p1"</td>                    <td bgcolor="#e6ffe6" align="left">+</td></tr>
+    </table>
+  >];
+
+  live [shape=plaintext, label=<
+    <table border="0" cellborder="1" cellspacing="0" cellpadding="4">
+      <tr><td colspan="3"><b>live projection at t2</b></td></tr>
+      <tr>
+        <td><b>eid</b></td>
+        <td><b>attr</b></td>
+        <td><b>value</b></td>
+      </tr>
+      <tr><td align="left">#1</td><td align="left">User/email</td>    <td align="left">"m@x.io"</td></tr>
+      <tr><td align="left">#1</td><td align="left">User/name</td>     <td align="left">"Matt"</td></tr>
+      <tr><td align="left">#2</td><td align="left">User/email</td>    <td align="left">"a@x.io"</td></tr>
+      <tr><td align="left">#2</td><td align="left">User/name</td>     <td align="left">"Alice"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/id</td>      <td align="left">"BUG-1"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/title</td>   <td align="left">"login button does nothing"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/status</td>  <td align="left">"open"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/assignee</td><td align="left">#2</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/labels</td>  <td align="left">"bug"</td></tr>
+      <tr><td align="left">#3</td><td align="left">Issue/labels</td>  <td align="left">"p1"</td></tr>
+    </table>
+  >];
+
+  log -> live [label="fold"];
+}

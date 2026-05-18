@@ -1,0 +1,15 @@
+digraph subtree {
+  node [shape=box, fontname="Helvetica"];
+
+  "Davout" [color=red, fontcolor=red];
+  "Friant" [color=red, fontcolor=red];
+  "Gudin"  [color=red, fontcolor=red];
+
+  "Napoléon" -> "Davout";
+  "Napoléon" -> "Ney";
+  "Napoléon" -> "Murat";
+  "Davout"   -> "Friant" [color=red];
+  "Davout"   -> "Gudin"  [color=red];
+  "Ney"      -> "Marchand";
+  "Murat"    -> "Lasalle";
+}
