@@ -1,7 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="750pt" height="527pt" viewBox="0.00 0.00 750.00 527.00">
+<style>
+@media (prefers-color-scheme: dark) {
+  [stroke="black"] { stroke: #e6edf3; }
+  [fill="black"], text:not([fill]) { fill: #e6edf3; }
+  [stroke="red"] { stroke: #ff7b72; }
+  [fill="red"] { fill: #ff7b72; }
+  [fill="#888888"] { fill: #9198a1; }
+  [fill="#e6ffe6"] { fill: #12361f; }
+  [fill="#ffe0e0"] { fill: #4b1d1f; }
+  [fill="#f2f2f2"] { fill: #262c36; }
+}
+</style>
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 523.2)">
 <title>issue_log_and_live</title>
-<polygon fill="white" stroke="none" points="-4,4 -4,-523.2 745.59,-523.2 745.59,4 -4,4"/>
+<polygon fill="none" stroke="none" points="-4,4 -4,-523.2 745.59,-523.2 745.59,4 -4,4"/>
 <!-- log -->
 <g id="node1" class="node">
 <title>log</title>

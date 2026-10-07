@@ -63,4 +63,5 @@ svg:
 		out="$${f%.dot}.svg"; \
 		echo "dot -Tsvg $$f > $$out"; \
 		dot -Tsvg "$$f" > "$$out"; \
+		pix/theme-svg.sh "$$out"; \
 	done

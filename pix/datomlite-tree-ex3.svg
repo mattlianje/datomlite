@@ -6,9 +6,21 @@
 <!-- Title: upstream Pages: 1 -->
 <svg width="305pt" height="188pt"
  viewBox="0.00 0.00 305.00 188.00" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<style>
+@media (prefers-color-scheme: dark) {
+  [stroke="black"] { stroke: #e6edf3; }
+  [fill="black"], text:not([fill]) { fill: #e6edf3; }
+  [stroke="red"] { stroke: #ff7b72; }
+  [fill="red"] { fill: #ff7b72; }
+  [fill="#888888"] { fill: #9198a1; }
+  [fill="#e6ffe6"] { fill: #12361f; }
+  [fill="#ffe0e0"] { fill: #4b1d1f; }
+  [fill="#f2f2f2"] { fill: #262c36; }
+}
+</style>
 <g id="graph0" class="graph" transform="scale(1 1) rotate(0) translate(4 184)">
 <title>upstream</title>
-<polygon fill="white" stroke="none" points="-4,4 -4,-184 301.38,-184 301.38,4 -4,4"/>
+<polygon fill="none" stroke="none" points="-4,4 -4,-184 301.38,-184 301.38,4 -4,4"/>
 <!-- Napoléon -->
 <g id="node1" class="node">
 <title>Napoléon</title>
