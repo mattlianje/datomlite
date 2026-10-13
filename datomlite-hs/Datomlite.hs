@@ -43,6 +43,8 @@ module Datomlite
   , TxId
   , basisT
   , asOf
+  , asOfTime
+  , txTime
   , since
 
     -- * The log: every fact, ever
@@ -71,6 +73,7 @@ module Datomlite
   , abort
   , commit
   , commit_
+  , commitAt
   , TxError (..)
   , Attr
   , Value (..)
@@ -88,11 +91,23 @@ module Datomlite
   , matchBy
   , follow
   , oneOf
+  , closure
   , exists
   , none
   , Var
   , refOf
   , recordOf
+
+    -- * Window functions over results
+  , Window
+  , window
+  , rowNumber
+  , rank
+  , denseRank
+  , lag
+  , lead
+  , whole
+  , running
 
     -- * The IO edge
   , Conn
@@ -111,3 +126,4 @@ import Datomlite.Core
 import Datomlite.Schema
 import Datomlite.Query
 import Datomlite.Watch
+import Datomlite.Window

@@ -7,6 +7,7 @@
 {-# LANGUAGE OverloadedStrings    #-}
 {-# LANGUAGE TypeApplications     #-}
 
+import           Control.Applicative    ((<|>))
 import           Control.Concurrent     (forkIO, threadDelay)
 import           Control.Concurrent.STM (TVar, atomically, check, modifyTVar',
                                          newTVarIO, readTVar, readTVarIO)
@@ -14,6 +15,7 @@ import           Control.Exception      (ErrorCall (..), evaluate, throwIO, try)
 import           Control.Monad   (forM_, guard, void, when)
 import qualified Data.ByteString as BS
 import           Data.List       (sort)
+import           Data.Ord        (Down (..))
 import           Data.Set        (Set)
 import qualified Data.Set        as Set
 import           Data.String     (fromString)
@@ -56,6 +58,12 @@ data Person = Person
   { pname :: Key Text
   , boss  :: Maybe (Ref Person)
   } deriving (Generic, Show, Eq, Entity)
+
+data Place = Place { place :: Key Text } deriving (Generic, Show, Eq, Entity)
+data Road = Road { from :: Ref Place, to :: Ref Place } deriving (Generic, Show, Eq, Entity)
+
+data Pal = Pal { pal :: Key Text } deriving (Generic, Show, Eq, Entity)
+data Friend = Friend { fa :: Ref Pal, fb :: Ref Pal } deriving (Generic, Show, Eq, Entity)
 
 data Note = Note
   { body :: Maybe Text
@@ -110,6 +118,8 @@ tests = testGroup "Datomlite"
   , queryTests
   , ioTests
   , listenTests
+  , closureTests
+  , windowTests
   , sharedTests
   ]
 
@@ -467,7 +477,36 @@ timeTests = testGroup "Time travel (basisT, asOf)"
       (deptName <$> load eng (asOf t db2)) @?= Just "Engineering"
       (deptName <$> load eng db2)          @?= Just "Platform"
       basisT (asOf t db2) @?= t
+
+  , testCase "commitAt stamps the tx and asOfTime rewinds to it" $ do
+      Right (eng, db1) <- pure $ commitAt (at 9) emptyDb (new (Department "ENG" "Engineering"))
+      Right (_, db2) <- pure $ commitAt (at 12) db1 (update eng (\d -> d { deptName = "Platform" }))
+      txTime (basisT db1) db2 @?= Just (at 9)
+      txTime (basisT db2) db2 @?= Just (at 12)
+      (deptName <$> load eng (asOfTime (at 10) db2)) @?= Just "Engineering"
+      (deptName <$> load eng (asOfTime (at 12) db2)) @?= Just "Platform"
+      load eng (asOfTime (at 8) db2) @?= Nothing
+
+  , testCase "an unstamped commit goes with the stamp before it" $ do
+      Right (_, db1) <- pure $ commitAt (at 9) emptyDb (new (Skill "one"))
+      Right db2 <- pure $ commit_ db1 (new (Skill "two"))
+      Right (_, db3) <- pure $ commitAt (at 12) db2 (new (Skill "three"))
+      txTime (basisT db2) db3 @?= Nothing
+      map (skillName . snd) (loadAll (asOfTime (at 10) db3)) @?= ["one", "two"]
+
+  , testCase "tx times never go backwards" $ do
+      Right (_, db1) <- pure $ commitAt (at 12) emptyDb (pure ())
+      Right (_, db2) <- pure $ commitAt (at 9) db1 (pure ())
+      txTime (basisT db2) db2 @?= Just (at 12)
+
+  , testCase "tx times survive a save and restore" $ do
+      Right (_, db1) <- pure $ commitAt (at 9) emptyDb (new (Skill "one"))
+      let db' = fromHistory (map (read . show) (history db1))
+      txTime (basisT db1) db' @?= Just (at 9)
+      datoms db' @?= datoms db1
   ]
+  where
+    at h = UTCTime (fromGregorian 2026 10 13) (h * 3600)
 
 uniqueTests :: TestTree
 uniqueTests = testGroup "Uniqueness (Key)"
@@ -623,7 +662,9 @@ listenTests = testGroup "Listen and watch"
       _ <- commitIO conn (pure ())
       rs <- waitFor seen ((== 2) . length)
       map trTxId rs @?= [TxId 2, TxId 3]
-      map (sort . map dAttr . trDatoms) rs @?= [["Department/code", "Department/deptName"], []]
+      map (sort . map dAttr . trDatoms) rs
+        @?= [["Department/code", "Department/deptName", "db/txInstant"], ["db/txInstant"]]
+      assertBool "stamped" (all (\r -> trTime r /= Nothing) rs)
 
   , testCase "concurrent commits reach a listener once each, in tx order" $ do
       conn <- connect emptyDb
@@ -687,6 +728,78 @@ listenTests = testGroup "Listen and watch"
   ]
   where
     lastMay xs = if null xs then Nothing else Just (last xs)
+
+closureTests :: TestTree
+closureTests = testGroup "closure (recursion on cycles)"
+  [ testCase "roads: a directed graph with a cycle" $ do
+      let next p = do
+            r <- matchBy @Road @"from" (refOf p)
+            follow r.to
+          from' c = sort $ query roads $ do
+            t <- closure next =<< matchBy @Place @"place" c
+            pure t.place
+      from' "PAR" @?= ["BOR", "LYO", "MAR", "NCE", "PAR"]
+      from' "NCE" @?= []
+      from' "MAR" @?= ["BOR", "LYO", "MAR", "NCE", "PAR"]
+
+  , testCase "friends: an undirected graph, two components" $ do
+      let knows x = (matchBy @Friend @"fa" (refOf x) >>= \f -> follow f.fb)
+                <|> (matchBy @Friend @"fb" (refOf x) >>= \f -> follow f.fa)
+          cluster h = sort $ query friends $ do
+            y <- closure knows =<< matchBy @Pal @"pal" h
+            pure y.pal
+      cluster "alice" @?= ["alice", "bob", "carol", "dave", "erin"]
+      cluster "frank" @?= ["frank", "grace"]
+      null (query friends $ do
+        a <- matchBy @Pal @"pal" "alice"
+        y <- closure knows a
+        guard (y.pal == "frank")) @?= True
+
+  , testCase "a 2000 place ring terminates" $ do
+      let ring = either (error . show) id $ commit_ emptyDb $ do
+            ps <- traverse (new . Place . fromString . show) [1 .. 2000 :: Int]
+            mapM_ (\(a, b) -> new (Road a b)) (zip ps (drop 1 ps ++ ps))
+          next p = matchBy @Road @"from" (refOf p) >>= \r -> follow r.to
+      length (query ring (matchBy @Place @"place" "1" >>= \p -> exists (closure next p))) @?= 1
+  ]
+  where
+    roads = either (error . show) id $ commit_ emptyDb $ do
+      [par, lyo, mar, nce, bor] <- traverse (new . Place) ["PAR", "LYO", "MAR", "NCE", "BOR"]
+      mapM_ (new . uncurry Road) [(par, lyo), (lyo, mar), (mar, par), (lyo, nce), (par, bor)]
+    friends = either (error . show) id $ commit_ emptyDb $ do
+      [alice, bob, carol, dave, erin, frank, grace] <-
+        traverse (new . Pal) ["alice", "bob", "carol", "dave", "erin", "frank", "grace"]
+      mapM_ (new . uncurry Friend)
+        [(alice, bob), (alice, carol), (bob, dave), (carol, dave), (dave, erin), (frank, grace)]
+
+windowTests :: TestTree
+windowTests = testGroup "Window functions"
+  [ testCase "rowNumber, rank and denseRank per group" $ do
+      let w f = [ (n, x) | ((_, n, _), x) <- window team (Down . pts) f scores ]
+      w rowNumber @?= [("a",1),("b",2),("c",3),("d",4),("e",1),("f",2)]
+      w rank      @?= [("a",1),("b",2),("c",2),("d",4),("e",1),("f",2)]
+      w denseRank @?= [("a",1),("b",2),("c",2),("d",3),("e",1),("f",2)]
+
+  , testCase "lag and lead stop at the group's edge" $ do
+      let w f = map snd (window team (Down . pts) f scores)
+      w (lag 1 pts)  @?= [Nothing, Just 9, Just 7, Just 7, Nothing, Just 5]
+      w (lead 1 pts) @?= [Just 7, Just 7, Just 3, Nothing, Just 2, Nothing]
+      w (lag 5 pts)  @?= replicate 6 Nothing
+
+  , testCase "whole and running, several at once" $ do
+      let total = sum . map pts
+      map snd (window team (Down . pts) ((,) <$> whole total <*> running total) scores)
+        @?= [(26,9),(26,16),(26,23),(26,26),(7,5),(7,7)]
+
+  , testCase "const () is one group, ties keep their order" $
+      map (\((_, n, _), r) -> (n, r)) (window (const ()) pts rowNumber scores)
+        @?= [("f",1),("d",2),("e",3),("b",4),("c",5),("a",6)]
+  ]
+  where
+    scores = [ ("x", "b", 7), ("y", "e", 5), ("x", "a", 9), ("x", "c", 7)
+             , ("x", "d", 3), ("y", "f", 2) ] :: [(Text, Text, Int)]
+    team (t, _, _) = t
+    pts (_, _, p) = p
 
 recorder :: IO (TVar [a], a -> IO ())
 recorder = do

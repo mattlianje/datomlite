@@ -19,6 +19,7 @@ module Datomlite.Query
   , matchBy
   , follow
   , oneOf
+  , closure
 
     -- * Subqueries
   , exists
@@ -35,7 +36,10 @@ import  Control.Monad       (MonadPlus, ap)
 import  Data.Coerce         (Coercible, coerce)
 import  Data.Foldable       (toList)
 import  Data.Proxy          (Proxy (..))
+import  Data.Sequence       (Seq (..), (><))
+import qualified Data.Sequence as Seq
 import  Data.Set            (Set)
+import qualified Data.Set   as Set
 import  GHC.Records         (HasField (..))
 import  GHC.TypeLits        (KnownSymbol, Symbol, symbolVal)
 
@@ -130,6 +134,27 @@ follow r = Query $ \db -> [ Var r a | Just a <- [load r db] ]
 -- | Range over a 'Data.Set.Set' or 'Maybe' field: @s <- oneOf e.skills@.
 oneOf :: Foldable f => f a -> Query a
 oneOf xs = Query (const (toList xs))
+
+-- | Everything reachable from @x@ in one or more steps, each entity once. The
+-- fixed point of a recursive rule... so it's fine on cycles where plain
+-- recursion would loop forever:
+--
+-- @
+-- next p = do
+--   r <- matchBy \@Road \@\"from\" (refOf p)
+--   follow r.to
+--
+-- p <- closure next paris   -- paris too if a road loops back
+-- @
+--
+-- Breadth first, nearest first. Lazy so 'exists' stops at the first hit.
+closure :: (Var a -> Query (Var a)) -> Var a -> Query (Var a)
+closure step x = Query $ \db ->
+  let go _ Empty = []
+      go seen (v :<| vs)
+        | refOf v `Set.member` seen = go seen vs
+        | otherwise = v : go (Set.insert (refOf v) seen) (vs >< Seq.fromList (runQ (step v) db))
+  in go Set.empty (Seq.fromList (runQ (step x) db))
 
 -- | Keep the row if the subquery has a result (a semi-join). It runs against
 -- the same 'Db' as the query around it:

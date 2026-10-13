@@ -58,6 +58,7 @@ cd datomlite-hs && cabal repl
   - [Reverse refs](#reverse-refs)
   - [Aggregations](#aggregations)
   - [Sort and paging](#sort-and-paging)
+  - [Window functions](#window-functions)
 - [Time travel](#time-travel-through-past-states)
 - [History](#history-of-every-entity)
 - [Diff](#diff-two-databases)
@@ -65,6 +66,7 @@ cd datomlite-hs && cabal repl
 - [Existential subgoals](#existential-subgoals-semi-joins)
 - [Rules](#rules)
   - [Recursive rules](#recursive-rules)
+  - [Graphs with cycles](#graphs-with-cycles)
 - [Sharing the db](#sharing-the-db-across-threads)
 - [Listening and watching](#listening-and-watching)
 - [Saving and restoring](#saving-and-restoring)
@@ -142,16 +144,15 @@ field against a value.
 
 **Does it support all of Datalog?**<br>
 No. There is no Datalog engine. A query is a do-block in a list-like monad, so
-joins are nested loops. Recursion is ordinary Haskell recursion, and it has no
-fixed point, so a cyclic graph needs a visited set.
+joins are nested loops. Recursion is ordinary Haskell recursion, and `closure`
+is the fixed point for graphs with cycles.
 
 **Differences from Datomic / Datascript?**<br>
 - Records are "the schema". There is no `:db/ident`, no attribute registration,
   and cardinality and uniqueness aren't separate facts.
 - Queries are typed Haskell, not vectors of triples. The compiler checks every
   field access.
-- Single process. No peer or transactor, no client API, and no wall-clock
-  `txInstant` (yet).
+- Single process. No peer or transactor and no client API.
 
 **Transaction guarantees?**<br>
 - **Atomicity.** All asserts and retracts in a `Tx` commit together or none do.
@@ -183,7 +184,7 @@ error that says what to change.
 
 **What's missing?**<br>
 Pull, a storage engine (see [Saving and restoring](#saving-and-restoring)),
-pretty-printing, composite keys, window functions and wall-clock time travel.
+pretty-printing and composite keys.
 
 ## Updates
 Suppose we add two pugilists to our database, "Jet Li" and "Masvidal". Adding them appends datoms and the live projection picks them up:
@@ -284,6 +285,7 @@ import Data.Ord (Down (..))
 import Data.Set (Set)
 import qualified Data.Set as Set
 import Data.Text (Text)
+import Data.Time (getCurrentTime)
 import GHC.Generics (Generic)
 import Datomlite
 ```
@@ -560,6 +562,7 @@ matchBy @A @"f" v     the A's whose field f holds v, via the index
 follow ref            the entity a Ref points at
 oneOf xs              each value of a Set or Maybe field
 exists q / none q     keep the row if subquery q has rows / has none
+closure step x        everything reachable by repeating step, safe on cycles
 ```
 
 ### Do-block joins
@@ -641,6 +644,41 @@ take 2 . sortOn (Down . snd) $ query db $ do
 -- [("Bob",150000),("Matt",120000)]
 ```
 
+### Window functions
+SQL's `rank() OVER (PARTITION BY ... ORDER BY ...)`, as plain functions over
+the result list:
+
+```
+window part ord w rows   group by part, sort by ord, run w on each group
+rowNumber                1, 2, 3...
+rank                     ties share a rank and the next one skips: 1, 1, 3
+denseRank                ties share a rank with no skip: 1, 1, 2
+lag n f / lead n f       f of the row n before / after, Nothing past the edge
+whole f                  f of the whole group, on each row
+running f                f of the group up to this row
+```
+
+```haskell
+pay = query db $ do
+  e <- match @Employee
+  d <- follow e.dept
+  pure (d.name, e.name, e.salary)
+
+deptOf   (d, _, _) = d
+salaryOf (_, _, s) = s
+
+window deptOf (Down . salaryOf) ((,) <$> rank <*> whole (sum . map salaryOf)) pay
+-- [ (("Engineering","Matt",120000),  (1,230000))
+-- , (("Engineering","Alice",110000), (2,230000))
+-- , (("Sales","Bob",150000),         (1,150000)) ]
+
+-- top earner per dept
+[ (d, n) | ((d, n, _), 1) <- window deptOf (Down . salaryOf) rowNumber pay ]
+-- [("Engineering","Matt"),("Sales","Bob")]
+```
+
+Windows combine with `<*>` like above. Use `const ()` as `part` for one group.
+
 ## Time travel through past states
 Queries run on any `Db` value, so you can read any past state or branch off a
 speculative transaction. Either way, the db you started from is untouched.
@@ -648,6 +686,8 @@ speculative transaction. Either way, the db you started from is untouched.
 ```
 basisT db       the tx a db value reflects
 asOf t db       rewind to tx t
+asOfTime t db   rewind to a wall-clock time
+txTime tx db    when tx was committed
 since t db      only the facts added after tx t
 db              a snapshot is the value you already hold
 commit db tx    a what-if branch is a commit you don't keep
@@ -664,6 +704,24 @@ query db' names                      -- ["Matthieu","Alice","Bob"]
 query (asOf (basisT db) db') names   -- ["Matt","Alice","Bob"]
 query (since (basisT db) db2) names  -- ["Carol","Dan","Eve"]
 ```
+
+`commitIO` stamps each transaction with the clock. Plain `commit` is pure so
+it leaves the time off, and `commitAt t` stamps it with a `t` of your own:
+
+```haskell
+conn <- connect db
+before <- getCurrentTime
+_ <- commitIO conn (new (Employee "d@x.io" "Dan" eng 90000 mempty Nothing))
+now <- dbOf conn
+
+length (loadAll @Employee (asOfTime before now))  -- 3, before Dan
+length (loadAll @Employee now)                    -- 4
+```
+
+An unstamped transaction counts as happening with the stamp before it, so the
+pure seed above is there at any time. Times never go backwards, even if the
+clock does. Each one is logged as a `db/txInstant` datom so it's in
+`trDatoms` and `history` and survives a save.
 
 A `since` view holds only the newer facts, so an entity created before `t` and
 changed after it is just a fragment there. Typed reads skip it and see the
@@ -828,8 +886,81 @@ SELECT desc FROM ancestor WHERE anc = 'Napoleon';
 ```
 
 > [!NOTE]
-> This is plain recursion, not a fixed point, so it terminates on trees and
-> DAGs. For graphs with cycles, carry a visited set.
+> This is plain recursion, so it terminates on trees and DAGs. On a graph with
+> cycles it would loop forever... use `closure` there.
+
+### Graphs with cycles
+`closure step x` is everything reachable from `x` in one or more steps, each
+entity once. It's the fixed point of the rule, so cycles are fine.
+
+#### Directed graph (Roads)
+
+<p align="center">
+  <img src="../pix/datomlite-roads.svg" width="350">
+</p>
+
+```haskell
+data Place = Place { code :: Key Text } deriving (Generic, Entity)
+data Road  = Road { from :: Ref Place, to :: Ref Place } deriving (Generic, Entity)
+
+Right db = commit_ emptyDb $ do
+  [par, lyo, mar, nce, bor] <- traverse (new . Place) ["PAR", "LYO", "MAR", "NCE", "BOR"]
+  traverse_ (new . uncurry Road)
+    [(par, lyo), (lyo, mar), (mar, par) {- cycle -}, (lyo, nce), (par, bor)]
+
+-- one road away
+next :: Var Place -> Query (Var Place)
+next p = do
+  r <- matchBy @Road @"from" (refOf p)
+  follow r.to
+
+-- everywhere reachable from Paris. The cycle means PAR reaches itself
+query db $ do
+  t <- closure next =<< matchBy @Place @"code" "PAR"
+  pure t.code
+-- ["LYO","BOR","MAR","NCE","PAR"]
+```
+
+#### Undirected graph (Friends)
+A friendship is stored once and `knows` reads it both ways with `<|>`.
+Seven people, six edges, two components:
+
+<p align="center">
+  <img src="../pix/datomlite-friends.svg" width="500">
+</p>
+
+```haskell
+data Person = Person { handle :: Key Text } deriving (Generic, Entity)
+data Friend = Friend { a :: Ref Person, b :: Ref Person } deriving (Generic, Entity)
+
+Right db = commit_ emptyDb $ do
+  [alice, bob, carol, dave, erin, frank, grace] <-
+    traverse (new . Person) ["alice", "bob", "carol", "dave", "erin", "frank", "grace"]
+  traverse_ (new . uncurry Friend)
+    [(alice, bob), (alice, carol), (bob, dave), (carol, dave), (dave, erin), (frank, grace)]
+
+knows :: Var Person -> Query (Var Person)
+knows x = (follow . (.b) =<< matchBy @Friend @"a" (refOf x))
+      <|> (follow . (.a) =<< matchBy @Friend @"b" (refOf x))
+
+handleIs :: Text -> Query (Var Person)
+handleIs = matchBy @Person @"handle"
+
+-- Alice's cluster. She's in it too, through any friend and back
+query db $ do
+  y <- closure knows =<< handleIs "alice"
+  pure y.handle
+-- ["bob","carol","dave","alice","erin"]
+
+-- Frank is in a separate component
+query db $ do
+  y <- closure knows =<< handleIs "alice"
+  guard (y.handle == "frank")
+-- []
+```
+
+Results come out nearest first. `closure` is lazy so `exists (closure ...)`
+stops at the first hit.
 
 ## Sharing the db across threads
 `Db` is a plain value, so pass it anywhere. When threads need to share one
@@ -914,7 +1045,7 @@ stop <- listen conn $ \r -> appendFile "app.log" (unlines (map show (trDatoms r)
 ```
 
 A restored db picks up where the old one stopped: the same entities, the same
-past for `asOf`, and new entity ids that never reuse one the log mentions.
+past for `asOf` and `asOfTime`, and new entity ids that never reuse one the log mentions.
 
 - **`listen` is asynchronous**, so a crash right after a `commitIO` can lose
   the last commits. If each commit must be on disk before you move on, append

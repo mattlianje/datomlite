@@ -11,7 +11,10 @@ Initial release.
 - `Tx` monad with `new`, `save`, `update`, `setField`, `retractEntity` and `abort`. `commit` is pure and atomic and checks `Key` uniqueness
 - `load` and `loadAll`. Facts that don't decode throw a `LoadError` instead of disappearing
 - Queries are do-blocks: `match`, `matchBy` (through AVET), `follow`, `oneOf`, `exists` / `none`
+- `closure` for recursive queries over graphs with cycles
+- Window functions over results: `window` with `rowNumber`, `rank`, `denseRank`, `lag`, `lead`, `whole`, `running`
 - Time travel with `asOf`, `since`, `history` and `datoms`
+- `commitIO` stamps each tx with the time. Rewind to one with `asOfTime`, or stamp your own with `commitAt`
 - `fromHistory` rebuilds a `Db` from its datoms. `show` / `read` round-trips a datom per line
 - `Conn` and `commitIO` for the IO side
 - `listen` and `watch`. Each subscriber gets its own thread so writers never wait on it

@@ -50,6 +50,7 @@ module Datomlite.Schema
   , TxError (..)
   , commit
   , commit_
+  , commitAt
   , commitIO
 
     -- * Loading records
@@ -70,7 +71,7 @@ import qualified Data.Set       as Set
 import           Data.String    (IsString (..))
 import           Data.Text      (Text)
 import qualified Data.Text      as T
-import           Data.Time      (Day, UTCTime (..))
+import           Data.Time      (Day, UTCTime (..), getCurrentTime)
 import           Data.Type.Bool (If, type (&&), type (||))
 import           GHC.Generics
 import           GHC.Records    (HasField)
@@ -594,9 +595,20 @@ abort msg = Tx $ \_ -> Left (Aborted msg)
 -- Strict: a value that throws does so here... so a 'Right' never holds a 'Db'
 -- that blows up later.
 commit :: Db -> Tx a -> Either TxError (a, Db)
-commit db (Tx g) = do
+commit = commitWith id
+
+-- | 'commit' with a wall-clock time on the transaction, for 'asOfTime' and
+-- 'trTime'. It's logged as a @db\/txInstant@ datom so it survives a save and
+-- restore. A time before the last stamp is moved up to it.
+--
+-- 'commitIO' stamps with the clock. This is for tests or a clock of your own.
+commitAt :: UTCTime -> Db -> Tx a -> Either TxError (a, Db)
+commitAt t = commitWith (stampTime t)
+
+commitWith :: (Db -> Db) -> Db -> Tx a -> Either TxError (a, Db)
+commitWith finish db (Tx g) = do
   (a, s) <- g (TxState db [])
-  let db' = closeTx (txView s)
+  let db' = closeTx (finish (txView s))
   checkUnique (txClaims s) db'
   db' `seq` pure (a, db')
 
@@ -618,6 +630,8 @@ checkUnique claims db = mapM_ check claims
 -- transaction's result. A 'TxError' or an exception leaves the connection as
 -- it was.
 --
+-- The transaction is stamped with the current time (see 'commitAt').
+--
 -- @
 -- conn <- connect emptyDb
 -- Right empRef <- commitIO conn $ do
@@ -625,8 +639,9 @@ checkUnique claims db = mapM_ check claims
 --   new (Employee \"m\@x.io\" \"Max\" eng 120000 mempty Nothing)
 -- @
 commitIO :: Conn -> Tx a -> IO (Either TxError a)
-commitIO conn tx = atomicUpdate conn $ \db ->
-  case commit db tx of
+commitIO conn tx = do
+  now <- getCurrentTime
+  atomicUpdate conn $ \db -> case commitAt now db tx of
     Left err       -> (db,  Left err)
     Right (a, db') -> (db', Right a)
 

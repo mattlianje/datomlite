@@ -18,6 +18,7 @@ module Datomlite.Core
   , basisT
   , freshEntity
   , partialView
+  , txTime
 
     -- * Low-level transactions
   , TxData
@@ -27,10 +28,12 @@ module Datomlite.Core
   , transact
   , stage
   , closeTx
+  , stampTime
   , uniqueAt
 
     -- * Time travel (pure)
   , asOf
+  , asOfTime
   , since
   , history
   , fromHistory
@@ -150,12 +153,14 @@ data Db = Db
   , dbNextTx :: !Int
   , dbNextE  :: !Int
   , dbPartial :: !Bool -- a 'since' window
+  , dbTimes  :: !(Map TxId UTCTime) -- from the db/txInstant datoms
   } deriving (Eq, Show)
 
 -- | The empty database.
 emptyDb :: Db
 emptyDb = Db { dbLog = [], dbEavt = Map.empty, dbAvet = Map.empty
-             , dbBasis = TxId 0, dbNextTx = 1, dbNextE = 1, dbPartial = False }
+             , dbBasis = TxId 0, dbNextTx = 1, dbNextE = 1, dbPartial = False
+             , dbTimes = Map.empty }
 
 -- | Whether this is a 'since' view. Those can hold just part of an entity.
 partialView :: Db -> Bool
@@ -175,10 +180,23 @@ basisT = dbBasis
 freshEntity :: Db -> (EntityId, Db)
 freshEntity db = (EntityId (dbNextE db), db { dbNextE = dbNextE db + 1 })
 
+-- | When a transaction was committed, if it was stamped (see
+-- 'Datomlite.Schema.commitAt').
+txTime :: TxId -> Db -> Maybe UTCTime
+txTime tx db = Map.lookup tx (dbTimes db)
+
+-- The attribute a tx's wall-clock time is logged under
+txInstant :: Attr
+txInstant = "db/txInstant"
+
 -- Fold one datom into the live indexes. Asserting a live fact again or
--- retracting a dead one is a no-op
+-- retracting a dead one is a no-op. A tx time goes to 'dbTimes' and not the
+-- indexes... it's about the tx and not an entity
 index :: Db -> Datom -> Db
-index db d = case dOp d of
+index db d
+  | dAttr d == txInstant, VInstant t <- dValue d =
+      db { dbTimes = Map.insert (dTx d) t (dbTimes db) }
+  | otherwise = case dOp d of
   Assert
     | live      -> db
     | otherwise -> db { dbEavt = Map.insertWith (Map.unionWith (flip (++)))
@@ -202,7 +220,8 @@ index db d = case dOp d of
 -- Rebuild a database from a log (newest first). The id counters are kept
 reindex :: [Datom] -> Db -> Db
 reindex lg db =
-  foldl' index db { dbLog = lg, dbEavt = Map.empty, dbAvet = Map.empty } (reverse lg)
+  foldl' index db { dbLog = lg, dbEavt = Map.empty, dbAvet = Map.empty, dbTimes = Map.empty }
+    (reverse lg)
 
 -- | Raw writes: datoms still missing their tx id. Commit stamps it on. Build
 -- them with 'assert' and 'retract':
@@ -219,16 +238,18 @@ assert e a v = (e, a, v, Assert)
 retract :: EntityId -> Attr -> Value -> (EntityId, Attr, Value, Op)
 retract e a v = (e, a, v, Retract)
 
--- | A committed transaction: its id and the datoms it wrote.
+-- | A committed transaction: its id, its time if it was stamped and the
+-- datoms it wrote.
 data TxReport = TxReport
   { trTxId   :: TxId
+  , trTime   :: Maybe UTCTime
   , trDatoms :: [Datom]
   } deriving (Eq, Show)
 
 -- | Apply raw writes. Datoms go in as given with no uniqueness checks... those
 -- live in 'Datomlite.Schema.commit'.
 transact :: TxData -> Db -> (TxReport, Db)
-transact ops db = (TxReport (pendingTx db) (stamp ops db), closeTx (stage ops db))
+transact ops db = (TxReport (pendingTx db) Nothing (stamp ops db), closeTx (stage ops db))
 
 -- The id the next commit will get
 pendingTx :: Db -> TxId
@@ -243,6 +264,12 @@ stage :: TxData -> Db -> Db
 stage ops db = foldl' index db { dbLog = reverse ds ++ dbLog db } ds
   where ds = stamp ops db
 
+-- | Log a wall-clock time for the pending transaction. Never earlier than the
+-- last one so times only go forward even if the clock doesn't.
+stampTime :: UTCTime -> Db -> Db
+stampTime t db = stage [(EntityId 0, txInstant, VInstant t', Assert)] db
+  where t' = maybe t (max t . snd) (Map.lookupMax (dbTimes db))
+
 -- | Close the pending transaction: everything staged becomes that tx.
 closeTx :: Db -> Db
 closeTx db = db { dbBasis = pendingTx db, dbNextTx = dbNextTx db + 1 }
@@ -250,6 +277,14 @@ closeTx db = db { dbBasis = pendingTx db, dbNextTx = dbNextTx db + 1 }
 -- | The database as of a transaction (that one included).
 asOf :: TxId -> Db -> Db
 asOf tx db = (reindex (filter ((<= tx) . dTx) (dbLog db)) db) { dbBasis = min tx (dbBasis db) }
+
+-- | The database as of a wall-clock time: up to the last transaction stamped
+-- at or before @t@. An unstamped one (a pure 'Datomlite.Schema.commit') goes
+-- with the stamp before it.
+asOfTime :: UTCTime -> Db -> Db
+asOfTime t db = case [ tx | (tx, u) <- Map.toAscList (dbTimes db), u > t ] of
+  (TxId k : _) -> asOf (TxId (k - 1)) db
+  []           -> db
 
 -- | Only the facts written after a transaction.
 --
@@ -372,7 +407,8 @@ awaitAfter (Conn v _) t = do
 -- transaction gets an empty report.
 txsAfter :: TxId -> Db -> [TxReport]
 txsAfter t@(TxId from) db =
-  [ TxReport (TxId i) (Map.findWithDefault [] (TxId i) byTx) | i <- [from + 1 .. to] ]
+  [ TxReport (TxId i) (txTime (TxId i) db) (Map.findWithDefault [] (TxId i) byTx)
+  | i <- [from + 1 .. to] ]
   where
     TxId to = dbBasis db
     byTx = Map.fromList [ (dTx (NE.head g), NE.toList g) | g <- NE.groupWith dTx newer ]
