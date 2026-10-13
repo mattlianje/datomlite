@@ -17,19 +17,19 @@ case class Bout(
     winner: Fighter
 ) derives Entity
 
-val li     = Fighter("Jet Li",         "Wushu",      "China")
-val gegard = Fighter("Gegard Mousasi", "Mixed",      "Netherlands")
-val rory   = Fighter("Rory MacDonald", "Pankration", "Canada")
+val li = Fighter("Jet Li", "Wushu", "China")
+val gegard = Fighter("Gegard Mousasi", "Mixed", "Netherlands")
+val rory = Fighter("Rory MacDonald", "Pankration", "Canada")
 
 /* Threadsafe, all-or-nothing transactions */
 val rep = db.add(
   li,
   gegard,
   rory,
-  Bout("B1", li,     gegard, li),
-  Bout("B2", li,     rory,   li),
-  Bout("B3", gegard, rory,   gegard),
-  Bout("B4", rory,   li,     li)
+  Bout("B1", li, gegard, li),
+  Bout("B2", li, rory, li),
+  Bout("B3", gegard, rory, gegard),
+  Bout("B4", rory, li, li)
 )
 
 /* Reads feel like a Scala collection */

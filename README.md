@@ -46,8 +46,10 @@ Try it in your REPL:
 - [Keys and uniqueness](#keys-and-uniqueness)
 - [Refs and cardinality](#refs-and-cardinality)
 - [Optional fields](#optional-fields)
+- [Value types and codecs](#value-types-and-codecs)
 - [Tx blocks](#tx-blocks-batch-multiple-ops)
 - [Listen](#listen-for-db-changes)
+- [Watch](#watch-a-query)
 - [Predicates](#predicates-as-index-probes)
 - [Queries](#queries)
   - [For-comprehension joins](#for-comprehension-joins)
@@ -68,6 +70,7 @@ Try it in your REPL:
   - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
   - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
 - [Persistence](#persistence-and-custom-backends)
+- [Schema evolution](#schema-evolution)
 - [Sharing the db](#sharing-the-db-across-threads)
 - [Debug](#debug-pretty-print-state-and-log)
 - [Build / Contribute](#build--contribute)
@@ -127,9 +130,10 @@ No. Recursion goes through named rules, negation is top-level conjunctions only,
 
 **Transaction guarantees?**<br>
 - **Atomicity.** All asserts and retracts in a tx commit together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
-- **Linearizable commits.** Each commit goes through a CAS on the live state.
-- **Snapshot reads.** Every read call (`where`, `query`, `pull`, `byEid`) dereferences the live state once at entry and operates on that immutable snapshot for its duration.
-- **Optimistic multi-writers.** Many threads can call `transact` concurrently. CAS losers rebuild against the new state and retry. In effect, there is no write lock or single-writer requirement.
+- **Serialized commits.** Any number of threads can call `transact`. Commits run one at a time, in order, under a short write lock.
+- **Atomic read-modify-write.** `retractWhere`, `upsertWhere`, `db.tx { ... }` and `Tx.fn` read the state inside the commit. So a concurrent `upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
+- **Snapshot reads.** Every read call (`where`, `query`, `pull`, `byEid`) dereferences the live state once at entry and operates on that immutable snapshot for its duration. Reads never take the lock and never block.
+- **Write-ahead append.** `Storage.append` runs before a commit becomes visible. If it throws, the tx aborts: no state change and no listener fires.
 
 **What is the inspiration?**<br>
 Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/), [Datascript](https://github.com/tonsky/datascript), [Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is in the general orbit of Datalog flavoured triple stores, it puts particular (and to my knowledge novel) emphasis on type-safety and feeling 100% embedded into the host language. 
@@ -202,7 +206,7 @@ db.retractWhere[A](pred)     find every match and retract in one tx
 Read:
 ```
 db.where[A]                  Query[A] over all rows of A
-db.where[A](pred)            Query[A] filtered, indexed equality lowers to a probe
+db.where[A](pred)            Query[A] filtered, equality / ranges / startsWith lower to probes
 db.exists[A](pred)           Boolean, short-circuits
 db.count[A](pred)            Long, no row materialization
 .run / .one                  materialize to Vector / Option
@@ -222,6 +226,7 @@ db.add(
 db.where[Employee].run                            // Vector[Employee]
 db.where[Employee](_.email == "m@x.io").one       // Option[Employee]
 db.where[Employee](_.name.startsWith("M")).run    // Vector[Employee]
+db.where[Employee](_.salary >= 120_000L).run      // Vector[Employee]
 
 /* Retract */
 db.retractWhere[Employee](_.email == "a@x.io")
@@ -297,6 +302,7 @@ T          one datom per row
 Option[T]  one datom on Some, nothing on None
 Set[T]     one datom per element
 R          one datom, value is the target eid (needs Entity[R] in scope, target needs @key)
+Option[R]  one target eid on Some, nothing on None
 Set[R]     one datom per target eid
 ```
 
@@ -337,6 +343,75 @@ db.query[Employee] { e =>
 // Vector(("m@x.io", "Matt"))
 ```
 
+An `Option` of an entity is an optional ref. `.contains` probes by the target, `===` joins through it, and pull gives back an `Option[Pull[R]]`.
+
+```scala
+case class Mentor(@key email: String, name: String, mentor: Option[Mentor] = None) derives Entity
+
+val ann = Mentor("ann@x.io", "Ann")
+val db = Db(Mentor("bo@x.io", "Bo", Some(ann)))
+
+db.where[Mentor](_.mentor.contains(ann)).run.map(_.name) // Vector("Bo")
+db.where[Mentor](_.mentor.isEmpty).run.map(_.name)       // Vector("Ann")
+```
+
+## Value types and codecs
+Datoms store a small closed set of forms: `String`, `Int`, `Long`, `Double`, `Boolean`, `BigInt`, `BigDecimal`, and `Vector`s of those.
+Any other field type goes through a `Codec[T]` that maps it onto them. Givens ship for `Float`, `Short`, `Byte`, `Char`,
+`UUID`, `Time`, `Date`, collections, `Option`, `Either` and tuples. Case classes and enums get one with `derives Codec`.
+
+```scala
+enum Tier derives Codec:
+  case Free, Pro
+
+case class Address(street: String, city: String) derives Codec
+
+case class Money(cents: Long)
+given Codec[Money] = Codec.of[Money, Long](_.cents, Money(_))
+
+case class Account(@key id: UUID, tier: Tier, home: Address, fee: Money, limits: Map[String, Int]) derives Entity
+```
+
+```
+Tier.Pro                   "Pro"
+Address("1 Main", "Paris") Vector("street", "1 Main", "city", "Paris")
+Money(250)                 250L
+Map("a" -> 1)              Vector(Vector("a", 1))   /* sorted, so equal maps store equal */
+```
+
+Predicates, typed queries and pull all speak `T`. Literals get encoded going in, projections get decoded coming out.
+
+```scala
+db.where[Account](_.tier == Tier.Pro).run                   /* AVET probe on "Pro" */
+db.query[Account](a => find(a.home) where (a.fee === Money(250))).run
+// Vector(Address("1 Main", "Paris"))
+```
+
+> [!NOTE]
+> Comparisons, `orderBy`, `min` / `max` run on the stored form. That is numeric for numbers, lexicographic for strings, and
+> element by element for `Vector`s. So an enum sorts by case name, not by ordinal.
+
+### Dates and times
+`Time` is a UTC instant (epoch millis, stored as a `Long`) and `Date` a calendar day (days since 1970, stored as an `Int`).
+Both sort right and range-probe the index like any number.
+
+```scala
+case class Task(@key id: String, due: Date, doneAt: Option[Time]) derives Entity
+
+val d = Date.of(2026, 10, 13)       // or Date.parse("2026-10-13"), Date.today()
+d.plusDays(7).iso                   // "2026-10-20"
+Date.at(Time.now())                 // the UTC day of an instant
+
+db.where[Task](_.due < Date.today()).run          /* index slice, not a scan */
+```
+
+They're plain numbers at runtime so print them with `.iso`. On the JVM `java.time` is one line away:
+
+```scala
+given Codec[LocalDate] = Codec.of[LocalDate, Long](_.toEpochDay, LocalDate.ofEpochDay)
+given Codec[Instant] = Codec.of[Instant, Long](_.toEpochMilli, Instant.ofEpochMilli)
+```
+
 ## Tx blocks: batch multiple ops
 You'll often want to batch transaction that are to run sequentially, and **datomlite** supports this
 ```
@@ -346,10 +421,23 @@ b.retractWhere[A](pred)       finds matches, appends a retract
 b.upsertWhere[A](pred)(f)     reads matches, applies f, appends an upsert
 db.retractWhere / db.upsertWhere(pred)(f)   one-shot tx versions
 Tx.batch(steps*)              hold steps as a value
+Tx.fn(db => tx)               a step computed from the state-so-far
 db.transact(tx)               apply a Tx value
 ```
 
-Steps run in order against state-so-far, share one tx id, all-or-nothing.
+Steps run in order against the state-so-far, share one tx id, and commit all-or-nothing. The block runs *inside* the commit, so its reads and its writes are
+one atomic step. No other writer can slip in between. Read through `b.db` to see the state-so-far, including earlier steps in the block.
+
+```scala
+db.tx { b =>
+  val m = b.db.where[Employee](_.email == "m@x.io").one.get
+  b.upsert(m.copy(salary = m.salary + 5_000L))
+}
+```
+
+> [!NOTE]
+> The block may run on a writer's thread while other writers wait, so keep it short and pure. Calling `db.add` / `db.transact` on the outer db from inside
+> the block throws `IllegalStateException`. Use `b` instead.
 
 ```scala
 db.tx { b =>
@@ -375,11 +463,20 @@ val tx = Tx.batch(
 db.transact(tx)
 ```
 
+`Tx.fn` is the value-level form of a tx block. It computes its steps from the state-so-far when the tx commits, not when you build it:
+```scala
+case class Counter(@key name: String, n: Long) derives Entity
+
+val bump = Tx.fn(s => Tx.upsert(s.where[Counter](_.name == "hits").run.map(c => c.copy(n = c.n + 1))*))
+db.transact(Tx.batch(Tx.add(Counter("hits", 0)), bump))   // hits = 1
+```
+
 From a transaction you'll get back `TxReport`
 this carries 
 ```
-tx, time, adds, retracts, addedEids
+tx, time, adds, retracts, addedEids, datoms
 ```
+`datoms` holds exactly what the commit appended to the log.
 
 ## Listen for db changes
 You often want to respond to changes made to your datastore, which is why datomlite has `.listen`.
@@ -387,26 +484,60 @@ You often want to respond to changes made to your datastore, which is why datoml
 The callback fires after each successful commit with the `TxReport` (tx id, adds, retracts, addedEids). Reads inside see the just-committed state. Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
 
 ```scala
-db.listen { rep =>
+val sub = db.listen { rep =>
   println(s"tx ${rep.tx.value}: +${rep.adds.size} -${rep.retracts.size}")
 }
+sub.cancel() // or Using.resource(db.listen(...)) { _ => ... }, Subscription is AutoCloseable
 ```
+
+- Every commit once, in tx order, even with lots of writers. You only hear commits made after you subscribe.
+- If a listener throws the tx and other listeners are fine. The error goes to `ExecutionContext.defaultReporter`.
+- A listener can write to the db. It hears that write once the current callback returns.
+- Callbacks run outside the lock but `transact` may wait on them... so keep them quick.
+
 > [!NOTE]  
-> Snapshots and `withTx` branches (see [Time travel](#time-travel)) are read-only, `listen` is a no-op
+> Snapshots and `withTx` branches (see [Time travel](#time-travel)) are read-only. `listen` on them returns an inactive `Subscription`.
+
+## Watch a query
+`listen` tells you *that* something changed. `watch` tells you *what* your query now returns. It runs the query once up front, then again after each commit
+that could change the result. `f` fires only when the result actually differs from the previous one.
+
+```scala
+val sub = db.watch(_.where[Employee](_.salary > 100_000L).run.map(_.email))(emails => println(emails))
+// prints the current emails now, then again whenever that set changes
+
+db.watch(_.count[Order])(n => println(s"$n orders"))
+```
+
+- **Dependency tracking.** The query's reads are recorded per entity class, including ref targets it walks into. So a watch over `Employee` re-runs when an
+  `Employee` or its `Department` changes, and skips commits that only touch `Order`s.
+- **Materialized results only.** The query must return a value, not a lazy `Query` or selector, because a lazy result would compare by identity. `.run` it,
+  or `.count` it. The compiler tells you if you forget.
+- Same ordering, isolation and `Subscription` handling as `listen`.
+
+> [!WARNING]
+> Read through the db handed to the query (`_.where...` / `s => s.where...`), not the outer `db`. Reads on the outer db aren't tracked, and they can see a
+> newer state than the one being reported.
 
 
 ## Predicates as index probes
 You will have noticed **datomlite** operations with predicates feel like operations on plain collections.
 
-Under the hood, when you use predicates, **datomlite**'s macros lift plain equality to index-probed queries (so you aren't scanning all your triples)
+Under the hood, when you use predicates, **datomlite**'s macros lift equality, comparisons and prefixes to index-probed queries (so you aren't scanning all your triples)
 
 ```scala
 db.where[Employee](_.email == "m@x.io").run // <-- index probe
-db.where[Employee](_.name.startsWith("M")).run // <-- slow scan
+db.where[Employee](_.salary >= 120_000L).run // <-- range probe
+db.where[Employee](_.name.startsWith("M")).run // <-- prefix probe
+db.where[Employee](e => e.salary > 100_000L && e.salary <= 150_000L).run // <-- between
+db.where[Employee](e => e.name.startsWith("M") && e.name.length > 4).run // <-- probe, then filter
+db.where[Employee](_.name.matches("M.*")).run // <-- scan
 ```
 
-> [!NOTE]
-> Only equality lowers to a probe. `startsWith`, `>`, regex etc. all become full scans.
+The value index is sorted, so `>`, `>=`, `<`, `<=` (literal on either side) and `startsWith` read just the matching slice. That works on Int, Long, Double,
+BigInt, BigDecimal and String fields. In an `&&`, an equality leaf wins. Failing that, the field with the tightest bounds is probed. The rest of the
+predicate filters the slice, so any predicate stays correct and only the cost changes. `||`, regex and arbitrary code fall back to a scan. The same
+applies to `count`, `exists`, `retractWhere` and `upsertWhere`, and to comparisons in [typed queries](#typed-queries).
 
 Notably (and powerfully), Ref fields are walked inline, even when nested:
 ```scala
@@ -521,8 +652,8 @@ val rows = db.query[Employee, Department] { (e, d) =>
 }.run
 // Vector[NamedTuple[("name","dept","salary"), (String, String, Long)]]
 
-rows.head.name             // "Bob"
-rows.map(_.salary).sum     // 270000L
+rows.head.name          // "Bob"
+rows.map(_.salary).sum  // 270000L
 ```
 
 ```scala
@@ -534,9 +665,9 @@ yield s"$n earns $s"
 **datomlite** comes with built-in "sugar" for `groupBy` + fold over the query rows. Aggregator terms (`count`, `sum`, `avg`, `min`, `max`) sit inside `find(...)`, bare `find` vars become the group keys (no `GROUP BY`), wrong types are compile errors.
 
 ```
-count(t) / countDistinct(t)        Long
-sum(t) / avg(t)                    Numeric[T]
-min(t) / max(t)                    Ordering[T]
+count(t) / countDistinct(t)    Long
+sum(t) / avg(t)                Numeric[T]
+min(t) / max(t)                Ordering[T]
 ```
 
 ```scala
@@ -549,8 +680,8 @@ db.query[Employee, Order] { (e, o) =>
 For one-entity rollups, stay in Scala:
 
 ```
-Query[A].groupBy(f)       Map[K, Vector[A]] with .agg extension
-Query[A].countBy(f)       Map[K, Long]
+Query[A].groupBy(f)    Map[K, Vector[A]] with .agg extension
+Query[A].countBy(f)    Map[K, Long]
 ```
 
 ```scala
@@ -695,9 +826,9 @@ val snap   = db.snapshot
 val whatIf = db.withTx(Tx.add(Employee("e@x.io", "Eve",
                                        Department("ENG", "Engineering"))))
 
-snap.where[Employee].count        // 5, unchanged
-whatIf.where[Employee].count      // 6, includes Eve
-db.where[Employee].count          // 5, live untouched
+snap.where[Employee].count     // 5, unchanged
+whatIf.where[Employee].count   // 6, includes Eve
+db.where[Employee].count       // 5, live untouched
 ```
 
 ## History of every entity
@@ -705,9 +836,9 @@ You can call `.log` on any datomlite to get the full history of triples... or `.
 specific entities.
 
 ```
-db.log                    every datom in tx order
-db.historyOf(a)           trail for the entity currently matching a
-db.history(eid)           trail for an eid, survives retraction
+db.log             every datom in tx order
+db.historyOf(a)    trail for the entity currently matching a
+db.history(eid)    trail for an eid, survives retraction
 ```
 
 Each datom carries `tx`, `time`, `Op.Assert | Op.Retract` and nothing is overwritten.
@@ -1074,14 +1205,48 @@ Bring your own backend in two methods:
 ```scala
 trait Storage:
   def load(): Vector[Datom]                 /* once at boot */
-  def append(datoms: Vector[Datom]): Unit   /* after each committed tx */
+  def append(datoms: Vector[Datom]): Unit   /* each tx, in order, before it becomes visible */
 ```
 
+`append` is called under the write lock, before the commit is published. If it throws, the tx aborts and nothing changes. Storage order therefore always
+matches `db.log`.
+
 > [!WARNING]
-> Durability is best-effort. A crash between the in-memory CAS and the on-disk append loses that one tx on replay. But, in a datascript-ish way you can implement `Storage` with `fsync` semantics if you need stronger guarantees.
+> Durability is only as strong as your `append`. `FileStorage` writes but doesn't `fsync`, so an OS crash can lose recent txs. In a datascript-ish way you can implement `Storage` with `fsync` semantics if you need stronger guarantees.
+
+## Schema evolution
+The log outlives your case classes. Most changes to them just work when an older log replays:
+
+```
+added field with a default   older entities read the default, in queries, probes and pull too
+added Option / Set field     older entities read None / Set.empty
+removed field                its datoms are ignored on read
+Int -> Long/Double/BigInt    stored numbers widen on decode
+added field, no default      MissingField("Employee", "level") on read
+```
+
+Nested `derives Codec` case classes follow the same rules: a field added with a default fills in on older values.
+
+Renames need a `Migration`. Migrations rewrite datoms as they load, in order. The log on disk is never rewritten, so keep them for as long as the older datoms exist.
+
+```scala
+val storage = FileStorage(Path.of("db.dlite")).migrate(
+  Migration.renameEntity[Employee]("Staff"),                  /* Staff/... loads as Employee/... */
+  Migration.renameField[Employee](_.name, from = "fullName"),
+  Migration.removeField[Employee]("legacyId"),                /* drop from log / history */
+  Migration(d => Some(d))                                     /* or any Datom => Option[Datom] */
+)
+val db = Db(storage)
+``` 
+
+> [!WARNING]
+> If you are reaching to migrations, you might have outgrown datomlite and should be asking 
+> yourself questions... this feature is more of a nice-to-have, and datomlite is first and foremost
+> a cheap in memory DB.
 
 ## Sharing the db across threads
-`Db` is a plain value, pass it anywhere. Concurrent reads and writes are safe.
+`Db` is a plain value, pass it anywhere. Concurrent reads and writes are safe. Writes are serialized, reads never block, and `upsertWhere` / `tx` blocks
+are atomic read-modify-writes (see [Transaction guarantees](#faq)).
 
 ```scala
 val db: Db = Db()

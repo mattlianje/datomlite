@@ -135,3 +135,32 @@ class PersistenceTest extends munit.FunSuite:
 
     val db2 = Db(FileStorage(path))
     assertEquals(db2.where[Item].run.toSet, items.toSet)
+
+  test("file storage: codec values (BigInt, BigDecimal, nested vectors) round-trip"):
+    case class Note(title: String, body: String) derives Codec
+    case class Doc(
+        id: BigInt,
+        price: BigDecimal,
+        notes: List[Note],
+        meta: Map[String, Vector[Int]],
+        tag: Option[String]
+    )
+    given Entity[Doc] = Entity.derived[Doc].key(_.id)
+
+    val path = tmpFile()
+    val docs = Set(
+      Doc(
+        BigInt("123456789012345678901234567890"),
+        BigDecimal("0.10"),
+        List(Note("a:b", "tab\there\nline\\slash"), Note("", "3:x")),
+        Map("k:1" -> Vector(1, 2), "" -> Vector.empty),
+        Some("v5:hello")
+      ),
+      Doc(BigInt(-1), BigDecimal("1E+3"), Nil, Map.empty, None)
+    )
+    val db1 = Db(FileStorage(path))
+    docs.foreach(db1.add(_))
+
+    val db2 = Db(FileStorage(path))
+    assertEquals(db2.where[Doc].run.toSet, docs)
+    assertEquals(db2.log, db1.log)
