@@ -24,10 +24,17 @@ object Row {
   private[datomlite] def freshBinding(prefix: String): String =
     s"${prefix.headOption.map(_.toLower).getOrElse('r')}${counter.incrementAndGet()}"
 
+  /** `Term.Field` for one of the row's fields, with its codec and default */
+  private[datomlite] def field[A, T](row: Row[A], name: String): Term.Field[T] = {
+    val e = row.entity
+    val shape = e.shapes(e.fields.indexOf(name))
+    Term.Field[T](row.binding, s"${e.name}/$name", shape.codec, Schema.fallback(e, name))
+  }
+
   /** Macro target for `row.fieldName`.
     *
-    * Rewrites the access into `Term.Field[FieldType](row.binding, "Class/fieldName")`. Validates
-    * the field name against `A`'s case-class shape; an unknown field is a compile error
+    * Rewrites the access into `Row.field[A, FieldType](row, "fieldName")`. Validates the field name
+    * against `A`'s case-class shape; an unknown field is a compile error
     */
   def selectImpl[A: Type](row: Expr[Row[A]], name: Expr[String])(using Quotes): Expr[Any] = {
     import quotes.reflect.*
@@ -50,7 +57,7 @@ object Row {
         }
         effectiveType.asType match {
           case '[t] =>
-            '{ datomlite.Term.Field[t]($row.binding, $row.entity.name + "/" + $fieldNameExpr) }
+            '{ datomlite.Row.field[A, t]($row, $fieldNameExpr) }
         }
     }
   }

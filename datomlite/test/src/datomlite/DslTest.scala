@@ -100,7 +100,6 @@ class DslTest extends munit.FunSuite:
     }.run.toSet
     assertEquals(rows, Set(("Alice", "lamp"), ("Bob", "chair")))
 
-
   test("named tuple: arity 2 returns NamedTuple with user labels"):
     val db = seeded
     val rows = db.query[Employee] { e =>
@@ -117,7 +116,6 @@ class DslTest extends munit.FunSuite:
     }.run.toSet
     assertEquals(rows.map(_.email), Set("m@x.io", "a@x.io"))
     assertEquals(rows.map(_.dept), Set("Engineering"))
-
 
   test("rules: factored constraints compose"):
     val db = seeded

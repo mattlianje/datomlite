@@ -81,8 +81,8 @@ trait Db {
 
   /** Predicate-based retract
     *
-    * Finds all matches, retracts them in a single tx. Equality predicates take the AVET index
-    * automatically
+    * Finds all matches and retracts them in one tx... the read and the write are atomic. Equality
+    * and range predicates take the AVET index
     */
   inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): TxReport =
     ${ QMacro.retractWhereImpl[A]('this, 'pred, 'e) }
@@ -111,19 +111,22 @@ trait Db {
     * id and either all commit or none do (a `UniqueViolation` aborts the whole block)
     *
     * Steps run in declared order against the state-so-far, so retract-then-add of the same key is
-    * safe
+    * safe. The block runs inside the commit so reads through `b.db` can't go stale. Don't transact
+    * on the outer db from in here
     */
-  def tx(build: TxBuilder => Unit): TxReport = {
-    val b = new TxBuilder(this)
-    build(b)
-    transact(Tx.Batch(b.steps))
-  }
+  def tx(build: TxBuilder => Unit): TxReport =
+    transact(Tx.Fn { s =>
+      val b = new TxBuilder(s)
+      build(b)
+      Tx.Batch(b.steps)
+    })
 
   /** Predicate-based upsert...
     *
-    * Finds every match, applies `f` to each, then upserts the results in a single tx. Equality
-    * predicates take the AVET index. The upsert resolves by `.key`, so `f` should preserve the key
-    * field; changing it makes the upsert insert a new row
+    * Runs `f` on every match and upserts the results in one tx. The read happens inside the commit
+    * so concurrent `upsertWhere(...)(bump)` calls never lose an update. Equality and range
+    * predicates take the AVET index. The upsert goes by `.key` so `f` should leave the key alone...
+    * changing it inserts a new row
     */
   inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): TxReport =
     ${ QMacro.upsertWhereImpl[A]('this, 'pred, 'f, 'e) }
@@ -156,7 +159,28 @@ trait Db {
   def asOf(at: Time): Db
   @scala.annotation.targetName("asOfIso")
   def asOf(at: String): Db = asOf(Time.parse(at))
-  def listen(f: TxReport => Unit): Unit
+
+  /** Call `f` after every commit, in tx order
+    *
+    * Runs on the committing thread once the commit is visible and never under the write lock... so
+    * `f` can read or even transact. If `f` throws the error goes to the default reporter and the tx
+    * and other listeners carry on
+    */
+  def listen(f: TxReport => Unit): Subscription
+
+  /** A live query. Calls `f` with `q`'s result now... then again whenever it changes
+    *
+    * {{{
+    *   db.watch(_.where[Order](_.status == Status.Open).count)(n => badge.set(n))
+    * }}}
+    *
+    * `q` only re-runs after commits that write an entity class it read. So read through its
+    * argument. Closing over the outer `db` hides what it reads and the watch re-runs on every
+    * commit. End the query with `.run`, `.count` etc since a lazy `Query` never compares equal
+    *
+    * Callbacks run like `listen`'s
+    */
+  def watch[T](q: Db => T)(f: T => Unit)(using Eager[T]): Subscription
 
   /** Full append-only log of every assert and retract ever transacted. Datoms come back in
     * insertion order; the live state is the merge of asserts minus retracts...
