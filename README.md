@@ -70,7 +70,6 @@ Try it in your REPL:
   - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
   - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
 - [Persistence](#persistence-and-custom-backends)
-- [Schema evolution](#schema-evolution)
 - [Sharing the db](#sharing-the-db-across-threads)
 - [Debug](#debug-pretty-print-state-and-log)
 - [Build / Contribute](#build--contribute)
@@ -1213,36 +1212,6 @@ matches `db.log`.
 
 > [!WARNING]
 > Durability is only as strong as your `append`. `FileStorage` writes but doesn't `fsync`, so an OS crash can lose recent txs. In a datascript-ish way you can implement `Storage` with `fsync` semantics if you need stronger guarantees.
-
-## Schema evolution
-The log outlives your case classes. Most changes to them just work when an older log replays:
-
-```
-added field with a default   older entities read the default, in queries, probes and pull too
-added Option / Set field     older entities read None / Set.empty
-removed field                its datoms are ignored on read
-Int -> Long/Double/BigInt    stored numbers widen on decode
-added field, no default      MissingField("Employee", "level") on read
-```
-
-Nested `derives Codec` case classes follow the same rules: a field added with a default fills in on older values.
-
-Renames need a `Migration`. Migrations rewrite datoms as they load, in order. The log on disk is never rewritten, so keep them for as long as the older datoms exist.
-
-```scala
-val storage = FileStorage(Path.of("db.dlite")).migrate(
-  Migration.renameEntity[Employee]("Staff"),                  /* Staff/... loads as Employee/... */
-  Migration.renameField[Employee](_.name, from = "fullName"),
-  Migration.removeField[Employee]("legacyId"),                /* drop from log / history */
-  Migration(d => Some(d))                                     /* or any Datom => Option[Datom] */
-)
-val db = Db(storage)
-``` 
-
-> [!WARNING]
-> If you are reaching to migrations, you might have outgrown datomlite and should be asking 
-> yourself questions... this feature is more of a nice-to-have, and datomlite is first and foremost
-> a cheap in memory DB.
 
 ## Sharing the db across threads
 `Db` is a plain value, pass it anywhere. Concurrent reads and writes are safe. Writes are serialized, reads never block, and `upsertWhere` / `tx` blocks

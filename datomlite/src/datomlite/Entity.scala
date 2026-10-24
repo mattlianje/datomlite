@@ -33,9 +33,6 @@ trait Entity[A] {
   def unique(f: A => Any): Entity[A]
   def key(f: A => Any): Entity[A] = withKey(f)
 
-  /** Case-class defaults by field name. They fill in fields that older entities don't have */
-  def defaults: Map[String, () => Any] = Map.empty
-
   /** Override the entity's logical name...
     *
     * Drives the `Class/field` prefix used for attribute keys, storage buckets, error messages, and
@@ -65,8 +62,7 @@ object Entity {
         m.fromProduct(Tuple.fromArray(arr))
       ,
       keyOf = None,
-      uniques = Nil,
-      defaults = Defaults.of[A]
+      uniques = Nil
     )
     applyFieldAnnotations[A](base)
   }
@@ -201,8 +197,7 @@ object Entity {
       decomposeFn: A => Vector[(String, Any)],
       reconstructFn: Map[String, Any] => A,
       keyOf: Option[A => Any],
-      uniques: List[A => Any],
-      override val defaults: Map[String, () => Any]
+      uniques: List[A => Any]
   ) extends Entity[A] {
     def decompose(a: A): Vector[(String, Any)] = decomposeFn(a)
     def reconstruct(attrs: Map[String, Any]): A = reconstructFn(attrs)

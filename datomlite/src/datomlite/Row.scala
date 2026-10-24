@@ -24,11 +24,11 @@ object Row {
   private[datomlite] def freshBinding(prefix: String): String =
     s"${prefix.headOption.map(_.toLower).getOrElse('r')}${counter.incrementAndGet()}"
 
-  /** `Term.Field` for one of the row's fields, with its codec and default */
+  /** `Term.Field` for one of the row's fields, with its codec */
   private[datomlite] def field[A, T](row: Row[A], name: String): Term.Field[T] = {
     val e = row.entity
     val shape = e.shapes(e.fields.indexOf(name))
-    Term.Field[T](row.binding, s"${e.name}/$name", shape.codec, Schema.fallback(e, name))
+    Term.Field[T](row.binding, s"${e.name}/$name", shape.codec)
   }
 
   /** Macro target for `row.fieldName`.

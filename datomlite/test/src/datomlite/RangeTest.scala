@@ -137,36 +137,3 @@ class RangeTest extends munit.FunSuite:
       db.query[Person](p => find(p.name) where (p.age < 30L || p.age > 50L)).run.toSet,
       Set("Matt", "Carol")
     )
-
-  final class MemStorage extends Storage:
-    var datoms = Vector.empty[Datom]
-    def load(): Vector[Datom] = datoms
-    def append(ds: Vector[Datom]): Unit = datoms ++= ds
-
-  object v1:
-    case class Member(email: String)
-    given Entity[Member] = Entity.derived[Member].key(_.email).named("Member")
-
-  object v2:
-    case class Member(email: String, level: Int = 5)
-    given Entity[Member] = Entity.derived[Member].key(_.email).named("Member")
-
-  test("range probes count a field's default for rows written before it existed"):
-    val storage = MemStorage()
-    locally:
-      import v1.given
-      Db(storage, v1.Member("old@x.io"))
-    import v2.given
-    val db = Db(storage, v2.Member("hi@x.io", 9), v2.Member("lo@x.io", 1))
-    def emails(q: Iterable[v2.Member]) = q.iterator.map(_.email).toSet
-    assertEquals(emails(db.where[v2.Member](_.level > 3)), Set("old@x.io", "hi@x.io"))
-    assertEquals(emails(db.where[v2.Member](_.level > 5)), Set("hi@x.io"))
-    assertEquals(emails(db.where[v2.Member](_.level <= 5)), Set("old@x.io", "lo@x.io"))
-    assertEquals(
-      db.query[v2.Member](m => find(m.email) where (m.level >= 5)).run.toSet,
-      Set("old@x.io", "hi@x.io")
-    )
-    assertEquals(
-      db.query[v2.Member](m => find(m.email) where (m.level > 5)).run.toSet,
-      Set("hi@x.io")
-    )

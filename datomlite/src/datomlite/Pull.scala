@@ -130,13 +130,8 @@ object Pull {
   /* Runtime side of `selectDynamic`. `idx` is the field's position in the case class */
 
   private[datomlite] def scalar(p: Pull[?], idx: Int): Any = {
-    val e = p.entity
-    val field = e.fields(idx)
-    p.ctx.multiValueOf(p.eid, attrOf(p, idx)).headOption match {
-      case Some(v) => e.shapes(idx).codec.decode(v)
-      case None =>
-        e.defaults.get(field).fold(throw new MissingField(e.name, field, Some(p.eid)))(_())
-    }
+    val codec = p.entity.shapes(idx).codec
+    codec.decode(p.ctx.scalarOf(p.eid, attrOf(p, idx)))
   }
 
   private[datomlite] def multi(p: Pull[?], idx: Int): Set[Any] = {

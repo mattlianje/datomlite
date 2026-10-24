@@ -200,7 +200,6 @@ private[datomlite] object Compile {
               Q.Var(f.rowBinding),
               f.attr,
               Q.Var(bindField(f)),
-              f.fallback,
               bounds.getOrElse(key, Q.Bounds.none)
             )
           )
@@ -276,9 +275,9 @@ private[datomlite] object Compile {
 
   private def tryFoldEq(a: Term[?], b: Term[?]): Option[Q.Pattern] = (a, b) match {
     case (f: Term.Field[?], k: Term.Const[?]) =>
-      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.C(f.codec.encode(k.value)), f.fallback))
+      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.C(f.codec.encode(k.value))))
     case (f: Term.Field[?], r: Term.RowRef[?]) =>
-      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.Var(r.binding), f.fallback))
+      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.Var(r.binding)))
     case _ => None
   }
 

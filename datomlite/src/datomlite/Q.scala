@@ -35,15 +35,13 @@ private[datomlite] object Q {
 
   /** A single triple-pattern. Attribute is a literal of form `"Class/field"`
     *
-    * `fallback` is bound for entities of the attribute's class with no datom for it (see
-    * `Schema.fallback`). `bounds` narrows an unbound scan to a slice of the sorted AVET. It's
-    * inclusive and just a hint... the comparisons it came from still run
+    * `bounds` narrows an unbound scan to a slice of the sorted AVET. It's inclusive and just a
+    * hint... the comparisons it came from still run
     */
   final case class Pattern(
       e: Term,
       a: String,
       v: Term,
-      fallback: Option[Any] = None,
       bounds: Bounds = Bounds.none
   ) extends Clause
 

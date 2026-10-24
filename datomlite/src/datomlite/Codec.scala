@@ -44,9 +44,7 @@ object Codec {
     def decode(v: Any): Any = v
   }
 
-  /** A stored form stored as-is. `read` can widen older numbers too so a field that went from `Int`
-    * to `Long` still reads what's in the log
-    */
+  /** A stored form stored as-is */
   private def stored[T](name: String)(read: PartialFunction[Any, T]): Codec[T] = new Codec[T] {
     def encode(t: T): Any = t
     def decode(v: Any): T = read.applyOrElse(v, mismatch(name))
@@ -58,27 +56,10 @@ object Codec {
   given Codec[String] = stored("String") { case s: String => s }
   given Codec[Boolean] = stored("Boolean") { case b: Boolean => b }
   given Codec[Int] = stored("Int") { case i: Int => i }
-  given Codec[Long] = stored("Long") {
-    case l: Long => l
-    case i: Int  => i.toLong
-  }
-  given Codec[Double] = stored("Double") {
-    case d: Double => d
-    case l: Long   => l.toDouble
-    case i: Int    => i.toDouble
-  }
-  given Codec[BigInt] = stored("BigInt") {
-    case b: BigInt => b
-    case l: Long   => BigInt(l)
-    case i: Int    => BigInt(i)
-  }
-  given Codec[BigDecimal] = stored("BigDecimal") {
-    case b: BigDecimal => b
-    case b: BigInt     => BigDecimal(b)
-    case l: Long       => BigDecimal(l)
-    case i: Int        => BigDecimal(i)
-    case d: Double     => BigDecimal(d)
-  }
+  given Codec[Long] = stored("Long") { case l: Long => l }
+  given Codec[Double] = stored("Double") { case d: Double => d }
+  given Codec[BigInt] = stored("BigInt") { case b: BigInt => b }
+  given Codec[BigDecimal] = stored("BigDecimal") { case b: BigDecimal => b }
 
   given Codec[Float] = of[Float, Double](_.toDouble, _.toFloat)
   given Codec[Short] = of[Short, Int](_.toInt, _.toShort)
@@ -133,8 +114,7 @@ object Codec {
   /** Codec for a case class, sealed trait or enum
     *
     * Case classes store as `Vector(name1, value1, name2, value2, ...)` and read back by field
-    * name.. so older values survive added fields (with a default), dropped fields and reordering.
-    * Plain enums store as the bare case name. Other sums store as `Vector(caseName, payload)`
+    * name. Plain enums store as the bare case name. Other sums store as `Vector(caseName, payload)`
     */
   inline def derived[T](using m: Mirror.Of[T]): Codec[T] =
     inline m match {
@@ -143,8 +123,7 @@ object Codec {
           constValue[p.MirroredLabel],
           p,
           constValueTuple[p.MirroredElemLabels].toList.asInstanceOf[List[String]],
-          codecsOf[p.MirroredElemTypes],
-          Defaults.of[T]
+          codecsOf[p.MirroredElemTypes]
         )
       case s: Mirror.SumOf[T] =>
         new SumCodec[T](
@@ -181,8 +160,7 @@ object Codec {
       name: String,
       m: Mirror.ProductOf[T],
       labels: List[String],
-      fieldCodecs: => List[Codec[Any]],
-      defaults: Map[String, () => Any]
+      fieldCodecs: => List[Codec[Any]]
   ) extends Codec[T] {
     private lazy val fields = labels.zip(fieldCodecs).toArray
     def arity: Int = labels.size
@@ -197,8 +175,7 @@ object Codec {
       val values = fields.map { (label, c) =>
         byName.get(label) match {
           case Some(x) => c.decode(x)
-          case None =>
-            defaults.get(label).fold(throw new MissingField(name, label, None))(_())
+          case None    => mismatch(name)(v)
         }
       }
       m.fromProduct(Tuple.fromArray(values.map(_.asInstanceOf[Object])))

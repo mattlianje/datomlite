@@ -169,12 +169,7 @@ private[datomlite] object DbImpl {
           findExisting(entity, attrsAsSets) match {
             case None      => this
             case Some(eid) =>
-              /* Retract what's actually stored. It differs from `flat` once the case class gains or
-               * drops fields. Keep `flat`'s order for the usual case */
-              val stored = flatten(eavt.getOrElse(eid, Map.empty))
-              val stale = stored.filterNot(flat.contains)
-              val datoms = (flat.filter(stored.contains) ++ stale)
-                .map((a, vv) => Datom(eid, a, vv, tx, time, Op.Retract))
+              val datoms = flat.map((a, vv) => Datom(eid, a, vv, tx, time, Op.Retract))
               copy(
                 eavt = eavt - eid,
                 eidByClass = eidByClass.updated(
@@ -191,10 +186,8 @@ private[datomlite] object DbImpl {
     private[DbImpl] def findExisting(
         entity: Entity[Any],
         attrs: Map[String, Set[Any]]
-    ): Option[Eid] = {
-      val cmp = State.matcher(entity, attrs)
-      eidByClass.getOrElse(entity.name, Set.empty).find(eid => eavt.get(eid).exists(cmp))
-    }
+    ): Option[Eid] =
+      eidByClass.getOrElse(entity.name, Set.empty).find(eid => eavt.get(eid).contains(attrs))
 
     private def byValue(attr: String): TreeMap[Any, Set[Eid]] =
       avet.getOrElse(attr, State.noValues)
@@ -218,19 +211,6 @@ private[datomlite] object DbImpl {
           case _              => false
         }
         .flatMap((v, eids) => eids.iterator.map(_ -> v))
-
-    /** AVET probe that knows about field defaults
-      *
-      * Entities of the attribute's class with no datom for it count as holding `fallback`
-      */
-    def lookup(attr: String, value: Any, fallback: Option[Any]): Set[Eid] =
-      if !fallback.contains(value) then lookup(attr, value)
-      else lookup(attr, value) ++ lacking(attr)
-
-    /** Live eids of `attr`'s class with no datom for `attr` */
-    def lacking(attr: String): Iterator[Eid] =
-      eidByClass.getOrElse(attr.takeWhile(_ != '/'), Set.empty).iterator
-        .filter(eid => !eavt.get(eid).exists(_.contains(attr)))
   }
 
   /** Accumulator threaded through `applyTx`.
@@ -257,28 +237,6 @@ private[datomlite] object DbImpl {
     val empty: State = State(0L, 0L, Map.empty, Map.empty, Map.empty, Vector.empty)
 
     val noValues: TreeMap[Any, Set[Eid]] = TreeMap.empty(using Compare.ordering)
-
-    /** Is a stored row the same entity as `attrs` (a freshly flattened value)?
-      *
-      * Only compares the attributes the entity declares now. Leftovers from a removed field don't
-      * get in the way and a field added since the row was written matches its default
-      */
-    def matcher(
-        entity: Entity[Any],
-        attrs: Map[String, Set[Any]]
-    ): Map[String, Set[Any]] => Boolean = {
-      val expected = entity.fields.map { field =>
-        val attr = s"${entity.name}/$field"
-        (attr, attrs.getOrElse(attr, Set.empty[Any]), Schema.fallback(entity, field))
-      }
-      stored =>
-        expected.forall { (attr, want, fallback) =>
-          stored.get(attr) match {
-            case Some(have) => have == want
-            case None       => want.isEmpty || fallback.exists(f => want == Set(f))
-          }
-        }
-    }
 
     def collapseToSets(flat: Iterable[(String, Any)]): Map[String, Set[Any]] =
       flat.foldLeft(Map.empty[String, Set[Any]]) { case (acc, (k, v)) =>
@@ -357,20 +315,15 @@ private[datomlite] object DbImpl {
       e.fields.zip(e.shapes).map { case (field, shape) =>
         val attrKey = prefix + field
         val values = attrs.getOrElse(attrKey, Set.empty[Any])
-        /* Required field with no datom... it was added after this entity was written */
-        def missing: Any =
-          e.defaults.get(field).fold(throw new MissingField(e.name, field, Some(Eid.value(eid))))(
-            _()
-          )
         val v: Any = shape match {
           case FieldShape.Value(codec) =>
-            values.headOption.fold(missing)(codec.decode)
+            codec.decode(values.head)
           case FieldShape.MultiValue(codec) =>
             values.map(codec.decode)
           case FieldShape.Optional(codec) =>
             values.headOption.map(codec.decode)
           case FieldShape.Ref(targetFn) =>
-            values.headOption.fold(missing)(refTo(targetFn(), _))
+            refTo(targetFn(), values.head)
           case FieldShape.MultiRef(targetFn) =>
             val target = targetFn()
             values.map(refTo(target, _))
@@ -491,7 +444,7 @@ private[datomlite] object DbImpl {
     val attr = s"${e.name}/$field"
     e.fields.indexOf(field) match {
       case -1 => state.lookup(attr, value)
-      case i  => state.lookup(attr, e.shapes(i).codec.encode(value), Schema.fallback(e, field))
+      case i  => state.lookup(attr, e.shapes(i).codec.encode(value))
     }
   }
 
@@ -762,20 +715,12 @@ private[datomlite] object DbImpl {
         val eid = Eid(eAny.asInstanceOf[Long])
         state.eavt.get(eid).flatMap(_.get(pat.a)) match {
           case Some(vs) => vs.iterator.map(v => (eid, v))
-          case None =>
-            pat.fallback match {
-              case Some(f) if state.eidByClass.get(pat.a.takeWhile(_ != '/')).exists(_(eid)) =>
-                Iterator.single((eid, f))
-              case _ => Iterator.empty
-            }
+          case None     => Iterator.empty
         }
       case (None, Some(vAny)) =>
-        state.lookup(pat.a, vAny, pat.fallback).iterator.map(eid => (eid, vAny))
+        state.lookup(pat.a, vAny).iterator.map(eid => (eid, vAny))
       case (None, None) =>
-        val present = state.scan(pat.a, pat.bounds)
-        pat.fallback.filter(pat.bounds.admits).fold(present)(f =>
-          present ++ state.lacking(pat.a).map(eid => (eid, f))
-        )
+        state.scan(pat.a, pat.bounds)
     }
 
     def bind(t: Q.Term, value: Any, into: Map[String, Any]): Map[String, Any] = t match {
@@ -789,7 +734,7 @@ private[datomlite] object DbImpl {
     }
   }
 
-  /** Live eids of `e` whose `field` is in range, counting those that fall back to the default
+  /** Live eids of `e` whose `field` is in range
     *
     * Bounds are values of the field's type and go through its codec
     */
@@ -805,18 +750,10 @@ private[datomlite] object DbImpl {
     val i = e.fields.indexOf(field)
     val encode: Any => Any = if i < 0 then identity else e.shapes(i).codec.encode
     val bounds = Q.Bounds(lo.map(encode), hi.map(encode))
-    def prefixed(v: Any): Boolean = prefix.forall(p =>
-      v match {
-        case s: String => s.startsWith(p)
-        case _         => false
-      }
-    )
     val present = prefix.fold(state.scan(attr, bounds))(p =>
       state.scanPrefix(attr, p).filter((_, v) => bounds.admits(v))
     )
-    val defaulted =
-      if i < 0 then None else Schema.fallback(e, field).filter(f => bounds.admits(f) && prefixed(f))
-    (present.map(_._1) ++ defaulted.iterator.flatMap(_ => state.lacking(attr))).distinct
+    present.map(_._1).distinct
   }
 
   private def byRangeQuery[A](

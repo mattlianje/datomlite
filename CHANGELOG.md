@@ -5,8 +5,6 @@
 - `Codec[T]` for value types. `derives Codec` on case classes and enums, `Codec.of` for anything else
 - `Date` (a calendar day) next to `Time`
 - `Option[R]` fields where `R` is an entity are optional refs
-- Old data still reads after you add a field with a default, drop one, or widen `Int` to `Long`
-- `Migration` for renames and removals, run on load with `Storage.migrate`
 - `Tx.fn(db => tx)` reads and writes in one commit. `db.tx`, `retractWhere` and `upsertWhere` use it so concurrent updates don't get lost
 - Writes are serialized, reads never block. A failing `Storage.append` aborts the tx
 - `TxReport.datoms`
