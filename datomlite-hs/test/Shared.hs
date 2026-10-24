@@ -5,6 +5,7 @@
 {-# LANGUAGE OverloadedRecordDot   #-}
 {-# LANGUAGE OverloadedStrings     #-}
 {-# LANGUAGE TypeApplications      #-}
+{-# LANGUAGE TypeFamilies          #-}
 
 -- Records that share field names, and the by-name helpers that cope with them:
 -- setField, matchBy, exists and none.
@@ -21,28 +22,36 @@ import           Test.Tasty.HUnit
 
 import           Datomlite
 
-data Team = Team { code :: Key Text, name :: Text }
-  deriving (Generic, Show, Eq, Entity)
+data Team = Team { code :: Text, name :: Text }
+  deriving (Generic, Show, Eq)
+instance Entity Team where
+  type Identity Team = '["code"]
 
-data Tag = Tag { name :: Key Text }
-  deriving (Generic, Show, Eq, Entity)
+data Tag = Tag { name :: Text }
+  deriving (Generic, Show, Eq)
+instance Entity Tag where
+  type Identity Tag = '["name"]
 
 data Member = Member
-  { email    :: Key Text
+  { email    :: Text
   , name     :: Text
   , team     :: Ref Team
   , tags     :: Set (Ref Tag)
   , nickname :: Maybe Text
   , level    :: Int
-  } deriving (Generic, Show, Eq, Entity)
+  } deriving (Generic, Show, Eq)
+instance Entity Member where
+  type Identity Member = '["email"]
 
 data Purchase = Purchase { buyer :: Text, item :: Text }
   deriving (Generic, Show, Eq, Entity)
 
 -- A record stored under a custom prefix.
-data Renamed = Renamed { label :: Key Text }
+data Renamed = Renamed { label :: Text }
   deriving (Generic, Show, Eq)
-instance Entity Renamed where ename _ = "x.Renamed"
+instance Entity Renamed where
+  type Identity Renamed = '["label"]
+  ename _ = "x.Renamed"
 
 data World = World
   { db :: Db, eng :: Ref Team, sal :: Ref Team, hs :: Ref Tag, max_ :: Ref Member }
@@ -50,14 +59,14 @@ data World = World
 world :: World
 world = either (error . show) id $ do
   ((e, s, h, m), d) <- commit emptyDb $ do
-    e <- new (Team "ENG" "Engineering")
-    s <- new (Team "SAL" "Sales")
-    [h, sc] <- traverse new [Tag "haskell", Tag "scala"]
-    m <- new (Member "m@x.io" "Max" e (Set.fromList [h, sc]) (Just "mx") 3)
-    _ <- new (Member "a@x.io" "Ann" e (Set.singleton sc)     Nothing     2)
-    _ <- new (Member "s@x.io" "Sam" s mempty                 Nothing     3)
-    _ <- new (Purchase "m@x.io" "book")
-    _ <- new (Purchase "z@x.io" "lamp")
+    e <- insert (Team "ENG" "Engineering")
+    s <- insert (Team "SAL" "Sales")
+    [h, sc] <- traverse insert [Tag "haskell", Tag "scala"]
+    m <- insert (Member "m@x.io" "Max" e (Set.fromList [h, sc]) (Just "mx") 3)
+    _ <- insert (Member "a@x.io" "Ann" e (Set.singleton sc)     Nothing     2)
+    _ <- insert (Member "s@x.io" "Sam" s mempty                 Nothing     3)
+    _ <- insert (Purchase "m@x.io" "book")
+    _ <- insert (Purchase "z@x.io" "lamp")
     pure (e, s, h, m)
   pure (World d e s h m)
 
@@ -89,17 +98,18 @@ setFieldTests = testGroup "setField"
       ((.level) <$> now, (.nickname) <$> now) @?= (Just 4, Just Nothing)
       ((.name) <$> now, (.tags) <$> now) @?= ((.name) <$> was, (.tags) <$> was)
 
-  , testCase "a Key field takes the bare value and stays unique" $ do
+  , testCase "an identity field stays unique" $ do
       let w = world
       Right db' <- pure $ commit_ w.db (update w.max_ (setField @"email" "max@x.io"))
       (.email) <$> load w.max_ db' @?= Just "max@x.io"
+      Just ann <- pure (find @Member "a@x.io" w.db)
       commit_ w.db (update w.max_ (setField @"email" "a@x.io"))
-        @?= Left (UniqueViolation "Member/email" (VText "a@x.io"))
+        @?= Left (UniqueViolation "Member/email" (VText "a@x.io") (map refId [w.max_, refOf ann]))
   ]
 
 matchByTests :: TestTree
 matchByTests = testGroup "matchBy"
-  [ testCase "by Key" $ do
+  [ testCase "by identity" $ do
       let w = world
       query w.db (do m <- matchBy @Member @"email" "a@x.io"; pure m.name) @?= ["Ann"]
       query w.db (do m <- matchBy @Member @"email" "nobody"; pure m.name) @?= []
@@ -129,7 +139,7 @@ matchByTests = testGroup "matchBy"
         update w.max_ (setField @"team" w.sal)
         now <- txDb
         [ann] <- pure (query now (refOf <$> matchBy @Member @"name" "Ann"))
-        retractEntity ann
+        retract ann
       let viaIndex = query db' (do m <- matchBy @Member @"team" w.sal; pure m.name)
           viaScan  = query db' (do m <- match @Member; guard (m.team == w.sal); pure m.name)
       viaIndex @?= ["Max", "Sam"]
@@ -140,7 +150,7 @@ matchByTests = testGroup "matchBy"
         @?= ["Ann"]
 
   , testCase "respects a custom ename" $ do
-      Right (r, d) <- pure $ commit emptyDb (new (Renamed "x"))
+      Right (r, d) <- pure $ commit emptyDb (insert (Renamed "x"))
       query d (refOf <$> matchBy @Renamed @"label" "x") @?= [r]
   ]
 
@@ -163,7 +173,7 @@ subqueryTests = testGroup "exists / none"
 
   , testCase "subqueries see the same db as the outer query" $ do
       let w = world
-      Right db' <- pure $ commit_ w.db (new (Purchase "a@x.io" "pen"))
+      Right db' <- pure $ commit_ w.db (insert (Purchase "a@x.io" "pen"))
       let buyers d = query d $ do
             m <- match @Member
             exists (matchBy @Purchase @"buyer" m.email)

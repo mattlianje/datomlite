@@ -46,11 +46,12 @@ cd datomlite-hs && cabal repl
 - [Updates](#updates)
 - [Example schema](#example-schema)
 - [Operations](#operations)
-- [Keys and uniqueness](#keys-and-uniqueness)
+- [Identity and uniqueness](#identity-and-uniqueness)
+- [Finding and lookup refs](#finding-and-lookup-refs)
 - [Refs and cardinality](#refs-and-cardinality)
 - [Value types](#value-types)
 - [Optional fields](#optional-fields)
-- [Tx blocks](#tx-blocks-batch-multiple-ops)
+- [Tx blocks](#tx-blocks-steps-that-need-each-other)
 - [Queries](#queries)
   - [Do-block joins](#do-block-joins)
   - [Indexed lookups](#indexed-lookups)
@@ -85,6 +86,7 @@ cd datomlite-hs && cabal repl
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 import Control.Monad (guard)
 import Data.Text (Text)
 import GHC.Generics (Generic)
@@ -96,21 +98,26 @@ import Datomlite
 ```haskell
 import Datomlite
 
--- Just derive `Entity` on your records
-data Person = Person { email :: Key Text, name :: Text }
-  deriving (Show, Generic, Entity)
+-- Your records are the schema. `Identity` names the unique fields
+data Person = Person { email :: Text, name :: Text }
+  deriving (Show, Generic)
 
--- Start from `emptyDb`. A commit hands back the tx's result and a new db
-Right ([matt, alice], db) =
-  commit emptyDb $ traverse new [Person "m@x.io" "Matt", Person "a@x.io" "Alice"]
+instance Entity Person where
+  type Identity Person = '["email"]
+
+-- Start from `emptyDb`. Commit a list of writes and get a new db back
+Right db = commit_ emptyDb
+  [ Insert (Person "m@x.io" "Matt")
+  , Insert (Person "a@x.io" "Alice")
+  ]
 
 -- Your db feels like a collection
-[ p.name | (_, p) <- loadAll @Person db ]   -- ["Matt","Alice"]
-length (loadAll @Person db)                 -- 2
-load alice db                               -- Just (Person ...)
+[ p.name | p <- every @Person db ]          -- ["Matt","Alice"]
+length (every @Person db)                   -- 2
+(.name) <$> find @Person "a@x.io" db        -- Just "Alice", by identity
 
--- Upsert by key
-Right db' = commit_ db $ save (Person "m@x.io" "Matthieu")
+-- Upsert by identity
+Right db' = commit_ db [Upsert (Person "m@x.io" "Matthieu")]
 
 -- Queries are plain do-blocks
 query db' $ do
@@ -119,7 +126,7 @@ query db' $ do
   pure p.name
 -- ["Matthieu"]
 
-Right db'' = commit_ db' (retractEntity matt)
+Right db'' = commit_ db' [Delete (ref @Person "m@x.io")]
 ```
 
 ## FAQ
@@ -137,7 +144,7 @@ original typed records.
 **What indices does it maintain?**<br>
 **EAVT** for live entity reads and **AVET** for value lookups, both derived from
 the log and updated in lockstep with each commit. `load` and `follow` are a map
-lookup, and key checks are an AVET probe. `match @Employee` is a range scan
+lookup, and identity checks are an AVET probe. `match @Employee` is a range scan
 over the `Employee/…` attributes. `matchBy` is an AVET probe. `guard` filters
 rows after they are produced, so reach for `matchBy` when you're matching a
 field against a value.
@@ -155,16 +162,17 @@ is the fixed point for graphs with cycles.
 - Single process. No peer or transactor and no client API.
 
 **Transaction guarantees?**<br>
-- **Atomicity.** All asserts and retracts in a `Tx` commit together or none do.
-  A `UniqueViolation`, an `abort` or a failed pattern gives you a `Left`, and
+- **Atomicity.** All the writes in a commit land together or none do. A
+  `UniqueViolation`, an `abort` or a failed pattern gives you a `Left`, and
   there is no new `Db` at all.
-- **Purity.** `commit :: Db -> Tx a -> Either TxError (a, Db)`. The input `Db`
-  is untouched, so there is nothing to lock.
-- **Linearizable commits.** Writers to a `Conn` take turns: `commitIO` runs the
+- **Purity.** `commit db writes` is `Either TxError (result, Db)`. The input
+  `Db` is untouched, so there is nothing to lock.
+- **Linearizable commits.** Writers to a `Conn` take turns: `transact` runs the
   whole `Tx` against the current db, evaluates it, then swaps it in, so each
   commit sees the one before it. A `Tx` that throws (say, an `error` in a
-  field) throws at its `commitIO` and leaves the `Conn` as it was.
-- **Snapshot reads.** A `Db` never changes; `dbOf` hands you one.
+  field) throws at its `transact` and leaves the `Conn` as it was.
+- **Snapshot reads.** A `Db` never changes. `transact` hands back the one its
+  commit made, and `snapshot` the one the `Conn` holds now.
 
 **What if I change a record?**<br>
 Old datoms stay as they were, and `load` reads them back into the new type.
@@ -184,21 +192,25 @@ error that says what to change.
 
 **What's missing?**<br>
 Pull, a storage engine (see [Saving and restoring](#saving-and-restoring)),
-pretty-printing and composite keys.
+pretty-printing and composite identities.
 
 ## Updates
-Suppose we add two pugilists to our database, "Jet Li" and "Masvidal". Adding them appends datoms and the live projection picks them up:
+Say we add two pugilists, Jet Li and Masvidal. That appends their datoms, and
+the live projection picks them up:
 
 ```haskell
 data Fighter = Fighter
   { fName    :: Text
   , lName    :: Text
   , nickname :: Maybe Text
-  } deriving (Show, Generic, Entity)
+  } deriving (Show, Generic)
 
-Right ([masvi, _], db) = commit emptyDb $ traverse new
-  [ Fighter "Jorge" "Masvidal" (Just "Street Judas")
-  , Fighter "Jet"   "Li"       Nothing
+instance Entity Fighter where
+  type Identity Fighter = '["lName"]
+
+Right db = commit_ emptyDb
+  [ Insert (Fighter "Jorge" "Masvidal" (Just "Street Judas"))
+  , Insert (Fighter "Jet"   "Li"       Nothing)
   ]
 ```
 
@@ -206,15 +218,14 @@ Right ([masvi, _], db) = commit emptyDb $ traverse new
   <img src="../pix/datomlite-masvi1.svg" width="550">
 </p>
 
-Unsurprisingly, we want to remove Masvidal:
+Unsurprisingly, we want to retract Masvidal:
 ```haskell
-Right db' = commit_ db (retractEntity masvi)
-map snd (loadAll @Fighter db')
+Right db' = commit_ db [Delete (ref @Fighter "Masvidal")]
+map recordOf (every @Fighter db')
 -- [Fighter {fName = "Jet", lName = "Li", nickname = Nothing}]
 ```
-The live projection drops Masvi, but the log still has every datom:
-`history db'` holds all 8 (5 asserts, 3 retracts), and `datoms db'` holds Jet
-Li's 2.
+Masvi is gone from the live projection, but not from the log. `history db'` has
+all 8 datoms (5 asserts, 3 retracts) and `datoms db'` has Jet Li's 2.
 
 <p align="center">
   <img src="../pix/datomlite-masvi2.svg" width="550">
@@ -224,44 +235,59 @@ Li's 2.
 We'll use these vanilla domain entities throughout for example purposes...
 
 ```haskell
-data Department = Department { code :: Key Text, name :: Text }
-  deriving (Show, Generic, Entity)
+data Department = Department { code :: Text, name :: Text }
+  deriving (Show, Generic)
+instance Entity Department where
+  type Identity Department = '["code"]
 
-data Skill = Skill { name :: Key Text }
-  deriving (Show, Generic, Entity)
+data Skill = Skill { name :: Text }
+  deriving (Show, Generic)
+instance Entity Skill where
+  type Identity Skill = '["name"]
 
 data Order = Order { buyer :: Text, item :: Text, price :: Int }
   deriving (Show, Generic, Entity)
 
 data Employee = Employee
-  { email    :: Key Text
+  { email    :: Text
   , name     :: Text
   , dept     :: Ref Department
   , salary   :: Int
   , skills   :: Set (Ref Skill)
   , nickname :: Maybe Text
-  } deriving (Show, Generic, Entity)
+  } deriving (Show, Generic)
+instance Entity Employee where
+  type Identity Employee = '["email"]
 ```
 
 ...and this db:
 
 ```haskell
-Right (eng, db) = commit emptyDb $ do
-  eng   <- new (Department "ENG" "Engineering")
-  sales <- new (Department "SAL" "Sales")
-  [scala, hs] <- traverse new [Skill "Scala", Skill "Haskell"]
-  traverse_ new
-    [ Employee "m@x.io" "Matt"  eng   120000 (Set.fromList [scala, hs]) (Just "Matty")
-    , Employee "a@x.io" "Alice" eng   110000 (Set.singleton scala)      Nothing
-    , Employee "b@x.io" "Bob"   sales 150000 mempty                     Nothing
-    ]
-  traverse_ new [Order "m@x.io" "book" 20, Order "a@x.io" "lamp" 90, Order "b@x.io" "chair" 60]
-  pure eng
+Right db = commit_ emptyDb
+  [ Insert (Department "ENG" "Engineering")
+  , Insert (Department "SAL" "Sales")
+  , Insert (Skill "Scala")
+  , Insert (Skill "Haskell")
+  , Insert (Employee "m@x.io" "Matt"  (deptRef "ENG") 120000 (skillRefs ["Scala", "Haskell"]) (Just "Matty"))
+  , Insert (Employee "a@x.io" "Alice" (deptRef "ENG") 110000 (skillRefs ["Scala"])            Nothing)
+  , Insert (Employee "b@x.io" "Bob"   (deptRef "SAL") 150000 mempty                           Nothing)
+  , Insert (Order "m@x.io" "book" 20)
+  , Insert (Order "a@x.io" "lamp" 90)
+  , Insert (Order "b@x.io" "chair" 60)
+  ]
+  where
+    deptRef   = ref @Department
+    skillRefs = Set.fromList . map (ref @Skill)
+
+-- Engineering's Ref, for the examples below
+Just eng = refOf <$> find @Department "ENG" db
 ```
 
-Records can share field names (`name` above) thanks to
-`DuplicateRecordFields`: `e.name` knows which record it's reading, and
-`setField` does the same for writes.
+`ref @Department "ENG"` points at a department by its code, so employees can
+reference it in the same list ([lookup refs](#finding-and-lookup-refs)).
+
+Records can share field names like `name` (`DuplicateRecordFields`). `e.name`
+knows which record it's reading, and so does `setField`.
 
 The snippets from here on assume these:
 
@@ -276,6 +302,7 @@ The snippets from here on assume these:
 {-# LANGUAGE OverloadedRecordDot #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
 import Control.Applicative ((<|>))
 import Control.Monad (guard, when)
 import Data.Foldable (for_, traverse_)
@@ -293,49 +320,56 @@ import Datomlite
 </details>
 
 ## Operations
-Writes are steps in a `Tx`, and a commit applies them all-or-nothing.
+A commit takes a list of writes and applies them in order, all-or-nothing.
 Reads take a `Db` value, which never changes under you.
 
 Write:
 ```
-new r                  insert a record, returns its Ref (usable right away)
-save r                 insert, or update the entity already holding r's Key
-update ref f           change an entity with a function on its record
+Insert r               insert a record as a new entity
+Upsert r               insert, or update the entity already holding r's Identity
+Update ref f           change an entity with a function on its record
+Delete ref             retract every fact the entity holds
 setField @"f" v        a record -> record function that sets field f
-retractEntity ref      retract every fact the entity holds
-commit db tx           Either TxError (result, db')
-commit_ db tx          Either TxError db'
+commit_ db [w, ...]    Either TxError db'
+commit db [w, ...]     Either TxError ((), db')
 ```
+
+When a step needs an earlier step's result, write a [`Tx`
+do-block](#tx-blocks-steps-that-need-each-other) instead. `commit` takes either.
 
 Read:
 ```
-load ref db      Maybe a
-loadAll @A db    [(Ref A, A)], in creation order
-query db q       [a], run a Query
+load ref db          Maybe (Stored A)
+every @A db          [Stored A], in creation order
+find @A v db         Maybe (Stored A), by its Identity
+query db q           [a], run a Query
 ```
+
+Reads give you a `Stored A`, the record plus its `Ref`: `p.name` for a field,
+`refOf p` for the ref, `recordOf p` for the record.
 
 ```haskell
 -- Adding
-Right (carol, db1) = commit db $ new (Employee "c@x.io" "Carol" eng 100000 mempty Nothing)
-Right db2 = commit_ db1 $ traverse_ new
-  [ Employee "d@x.io" "Dan" eng 90000 mempty Nothing
-  , Employee "e@x.io" "Eve" eng 95000 mempty Nothing
+Right db1 = commit_ db [Insert (Employee "c@x.io" "Carol" eng 100000 mempty Nothing)]
+Right db2 = commit_ db1
+  [ Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)
+  , Insert (Employee "e@x.io" "Eve" eng 95000 mempty Nothing)
   ]
 
 -- Lookups
-load carol db2                      -- Just (Employee ...)
-map snd (loadAll @Employee db2)     -- [Employee]
-query db2 $ do                      -- [Employee]
+(.name) <$> find @Employee "c@x.io" db2 -- Just "Carol"
+map recordOf (every @Employee db2)      -- [Employee]
+query db2 $ do                          -- [Employee]
   e <- match @Employee
   guard (e.email == "m@x.io")
   pure (recordOf e)
 
 -- Retract
-Right db3 = commit_ db2 (retractEntity carol)
+Right db3 = commit_ db2 [Delete (ref @Employee "c@x.io")]
 
 -- Quick checks: results are lists
 not (null (query db3 (byEmail "m@x.io")))  -- True
-length (loadAll @Employee db3)             -- 5
+length (every @Employee db3)               -- 5
 ```
 
 A `Query` is a value, so a reusable lookup is just a function. `matchBy` finds
@@ -346,49 +380,108 @@ byEmail :: Text -> Query (Ref Employee)
 byEmail em = refOf <$> matchBy @Employee @"email" em
 ```
 
-A `Tx` hands back whatever its last step returns (`new` returns a `Ref`, and
-`traverse new` returns a list of them). `basisT db'` names the transaction.
+`basisT db` is the last transaction in a db.
 
-## Keys and uniqueness
-Often, we want to enforce uniqueness of data in our datastore. To this end, a
-field's type can mark it as a key:
+## Identity and uniqueness
+To keep a field unique, name it in the record's `Identity`:
 ```
-Key a      unique identity (any number per record)
-save r     find by key and write only the difference, same entity
-ename      override the attribute prefix
+type Identity t = '["f", ...]   each field unique on its own (default: none)
+Upsert r                        find by identity and write only the difference
+ename                           override the attribute prefix
 ```
 
-A duplicate `Key` value, whether it clashes with the db or with another step of
-the same `Tx`, fails with `UniqueViolation` and writes nothing.
+The record stays plain. `email` is just a `Text`, whether you build it, `load`
+it or read `e.email` in a query. A typo is a compile error:
+`datomlite: Identity User names "emial" but User has no such field`.
+
+Each field in the list is unique on its own, like Datomic's
+`:db.unique/identity`. A duplicate, against the db or within the same commit,
+fails with `UniqueViolation` and writes nothing. A `Maybe` identity only counts
+when it's `Just`.
 
 ```haskell
 data User = User
-  { email  :: Key Text
-  , handle :: Key Text
+  { email  :: Text
+  , handle :: Text
   , name   :: Text
-  } deriving (Show, Generic, Entity)
+  } deriving (Show, Generic)
 
-Right udb = commit_ emptyDb (new (User "a@x.io" "shared" "Alice"))
+instance Entity User where
+  type Identity User = '["email", "handle"]
 
-commit_ udb (new (User "b@x.io" "shared" "Bob"))
--- Left (UniqueViolation {uvAttr = "User/handle", uvValue = VText "shared"})
+Right udb = commit_ emptyDb [Insert (User "a@x.io" "shared" "Alice")]
+
+commit_ udb [Insert (User "b@x.io" "shared" "Bob")]
+-- Left (UniqueViolation { uvAttr = "User/handle", uvValue = VText "shared"
+--                       , uvEntities = [EntityId 1,EntityId 2] })
 ```
 
-With `OverloadedStrings` a `Key` needs no wrapper; a bare literal is the key.
-The check runs on the transaction's outcome, so retracting an entity and
-reusing its key in the same `Tx` is fine.
+`uvEntities` lists the entities that would share the value, oldest first. The
+check looks at the commit's end result, so retracting an entity and reusing its
+identity in one commit is fine.
 
-`save` keeps the entity's identity, so every `Ref` to it stays valid. Back on
-the example db:
+`Upsert` updates the entity in place, so refs to it stay valid. On the example
+db:
 ```haskell
-commit_ db (save (Department "ENG" "Platform"))
+commit_ db [Upsert (Department "ENG" "Platform")]
 -- Matt's and Alice's dept now reads "Platform"
 ```
 
 The same record name in two modules collides on the prefix. Override `ename`:
 ```haskell
-instance Entity Person where ename _ = "a.Person"
+instance Entity Person where
+  type Identity Person = '["email"]
+  ename _ = "a.Person"
 ```
+
+## Finding and lookup refs
+`find` reads an entity by its identity. `ref` points at it without reading
+anything:
+```
+find @A v db           Maybe (Stored A), the A whose Identity is v
+ref @A v               a Ref A to whichever entity holds v
+findBy @A @"f" v db    find, for a record with several identities
+refBy @A @"f" v        ref, likewise
+```
+
+```haskell
+find @Department "ENG" db             -- Just (Stored (Ref (EntityId 1)) (Department ...))
+findBy @User @"handle" "shared" udb   -- Just (Stored ...)
+```
+
+A `ref` works anywhere a `Ref` does. It's resolved on commit, so it can point at
+something written earlier in the same list:
+
+```haskell
+Right db2 = commit_ db
+  [ Upsert (Department "OPS" "Operations")
+  , Upsert (Skill "Nix")
+  , Upsert (Employee "o@x.io" "Olga" (ref @Department "OPS") 105000
+                     (Set.fromList [ref @Skill "Nix", ref @Skill "Haskell"]) Nothing)
+  ]
+```
+
+`load`, `follow`, `matchBy`, `Update` and `Delete` all take one:
+
+```haskell
+commit_ db
+  [ Update (ref @Employee "m@x.io") (setField @"salary" 125000)
+  , Delete (ref @Employee "b@x.io")
+  ]
+
+query db $ do
+  e <- matchBy @Employee @"dept" (ref @Department "ENG")
+  pure e.name
+-- ["Matt","Alice"]
+```
+
+- **Typed.** The value has the field's type (the inner type for `Maybe` and
+  `Set`). `find` on a record with no identity, or several, is a type error.
+- **Writes need a match.** A `ref` to nothing fails the commit with
+  `UnknownIdentity`. A read just comes back empty.
+- **Stored as an id.** The datom holds the entity id, so `e.dept` reads back as
+  a normal `Ref`. Refs compare by what they hold, so a `ref` never equals a
+  stored one. Compare with `refOf d`, not `ref @Department "ENG"`.
 
 ## Refs and cardinality
 Cardinality is a property of the field's type, not a separate declaration:
@@ -398,14 +491,12 @@ a          one datom
 Maybe a    one datom on Just, nothing on Nothing
 Set a      one datom per element
 Ref t      one datom, value is the target's entity id
-Key a      one datom, unique across the entity type
 ```
 
 `Ref t` is a scalar like any other, so `Maybe (Ref t)` and `Set (Ref t)` just
-work. A many-valued field is a `Set` (from `containers`), since the facts have
-no order or duplicates; declaring one as `[a]` is a type error that says so.
-`follow` walks a ref (a direct lookup), and `oneOf` ranges over a `Set` or
-`Maybe` field:
+work. Many-valued fields are `Set`s, since facts have no order or duplicates. An
+`[a]` field is a type error. `follow` walks a ref and `oneOf` ranges over a
+`Set` or `Maybe`:
 
 ```haskell
 query db $ do
@@ -417,11 +508,11 @@ query db $ do
 -- [("m@x.io","Scala"),("m@x.io","Haskell"),("a@x.io","Scala")]
 ```
 
-A ref field compares just as well against a `Ref` held outside the query:
-`guard (e.dept == eng)`.
+You can also compare a ref field to a `Ref` you already have: `guard (e.dept ==
+eng)`.
 
 ## Value types
-A field holds one of these, bare or inside `Key`, `Maybe` or `Set`:
+A field holds one of these, bare or inside `Maybe` or `Set`:
 
 ```
 Text, Int, Integer, Double, Bool
@@ -453,15 +544,14 @@ data Level = Junior | Senior
 newtype Email = Email Text
   deriving newtype (Show, Eq, Ord, ToValue, FromValue)
 
-data Hire = Hire { email :: Key Email, level :: Level, started :: Day }
+data Hire = Hire { email :: Email, level :: Level, started :: Day }
   deriving (Show, Generic, Entity)
 ```
 
-`Ord` is only needed to put them in a `Set`. Renaming an enum's constructor
-makes entities that hold the old name throw `BadValue` on read. A constructor
-with fields can't derive `ToValue`, and the type error says to make it an
-entity of its own and point at it with a `Ref`. A `NaN` behaves like any other
-value: you can store it, match it and retract it.
+`Ord` is only needed to put them in a `Set`. Rename an enum constructor and
+entities holding the old name throw `BadValue` on read. A constructor with
+fields can't derive `ToValue`; make it its own entity and point at it with a
+`Ref`. `NaN` is a normal value: store it, match it, retract it.
 
 ## Optional fields
 `Maybe a` writes a datom only on `Just`. `Nothing` is absence, not a stored
@@ -481,7 +571,7 @@ query db $ do
 -- ["a@x.io","b@x.io"]
 ```
 
-`oneOf` projects the inner value and emits a row only when it's present:
+`oneOf` gives a row only when there's a value:
 
 ```haskell
 query db $ do
@@ -491,37 +581,49 @@ query db $ do
 -- [("m@x.io","Matty")]
 ```
 
-## Tx blocks: batch multiple ops
-A `Tx` is a monad, so batching is a do-block:
+## Tx blocks: steps that need each other
+A list covers most writes. Use a `Tx` do-block when a step needs an earlier
+result, the db so far, or a way to bail. `commit` and `transact` take either:
 ```
-do { new ..; update ..; save ..; retractEntity .. }   one tx
-txDb              the in-progress db, earlier steps included
-abort msg         give up with Aborted msg
-Just x <- ...     a failed pattern aborts too (MonadFail)
-commit db tx      apply a Tx value
+insert r / upsert r   Insert / Upsert, returning the entity's Ref
+update ref f          Update
+retract ref           Delete
+txDb                  the in-progress db, earlier steps included
+abort msg             give up with Aborted msg
+Just x <- ...         a failed pattern aborts too (MonadFail)
+commit db tx          Either TxError (the block's result, db')
 ```
 
-Steps run in order against state-so-far, share one tx id, and commit
-all-or-nothing.
+Steps run in order, share one tx id, and commit all-or-nothing. The block
+returns what its last step returns:
+
+```haskell
+Right (carol, _) = commit db $ insert (Employee "c@x.io" "Carol" eng 100000 mempty Nothing)
+-- carol :: Ref Employee
+```
 
 ```haskell
 Right db' = commit_ db $ do
   now <- txDb
   for_ (query now (byEmail "m@x.io")) $ \r ->
     update r (setField @"name" "Matthieu")
-  new (Order "m@x.io" "book" 20)
+  insert (Order "m@x.io" "book" 20)
 ```
 
-`update` writes only the difference, so a single-valued field is replaced
-rather than given a second value. Any `a -> a` works: `setField` steps around
-the ambiguity of `e { name = … }` when two records share `name`, and when a
-field name is unique, plain record-update syntax is fine (see `balance`
-below). `setField`s compose with `.`, and a `Key` field takes the bare value. Because `txDb` sees everything so far,
-read-modify-write logic runs inside the transaction, atomically:
+`update` writes only the difference, so a single-valued field gets replaced, not
+doubled. It takes any `a -> a`. Use `setField` when two records share a field
+name, since `e { name = … }` is ambiguous then. Otherwise plain record update is
+fine (see `balance` below). `setField`s compose with `.`.
+
+`txDb` sees everything so far, so read-modify-write runs atomically inside the
+transaction:
 
 ```haskell
-data Account = Account { owner :: Key Text, balance :: Int }
-  deriving (Show, Generic, Entity)
+data Account = Account { owner :: Text, balance :: Int }
+  deriving (Show, Generic)
+
+instance Entity Account where
+  type Identity Account = '["owner"]
 
 transfer :: Ref Account -> Ref Account -> Int -> Tx ()
 transfer from to amount = do
@@ -530,25 +632,28 @@ transfer from to amount = do
   update from (\x -> x { balance = x.balance - amount })
   update to   (\x -> x { balance = x.balance + amount })
 
-Right ([alice, bob], adb) =
-  commit emptyDb $ traverse new [Account "alice" 100, Account "bob" 0]
+Right adb = commit_ emptyDb [Insert (Account "alice" 100), Insert (Account "bob" 0)]
+
+alice = ref @Account "alice"
+bob   = ref @Account "bob"
 
 commit_ adb (transfer alice bob 30)   -- Right adb', alice 70 and bob 30
 commit_ adb (transfer alice bob 500)
 -- Left (Aborted "insufficient funds")
 ```
 
-A `Tx` is just a value, so you can build one now and run it later:
+Writes and `Tx`s are just values, so you can build them now and commit later:
 ```haskell
-tx :: Tx ()
-tx = traverse_ new [Order "m@x.io" "book" 20, Order "m@x.io" "pen" 5]
+orders :: [Write]
+orders = [Insert (Order "m@x.io" "book" 20), Insert (Order "m@x.io" "pen" 5)]
 
-commit_ db tx
+commit_ db orders
 ```
 
 A failed transaction gives a `TxError`:
 ```
-UniqueViolation attr value   a Key value held by two entities
+UniqueViolation attr v es    an Identity value the entities es would share
+UnknownIdentity attr v       a ref nothing holds
 UnknownEntity eid            update on an entity with no facts
 Aborted msg                  abort, or a failed pattern
 ```
@@ -559,7 +664,7 @@ plain Haskell. These words are new:
 ```
 match @A              every entity of type A
 matchBy @A @"f" v     the A's whose field f holds v, via the index
-follow ref            the entity a Ref points at
+follow ref            the entity a Ref (or a lookup ref) points at
 oneOf xs              each value of a Set or Maybe field
 exists q / none q     keep the row if subquery q has rows / has none
 closure step x        everything reachable by repeating step, safe on cycles
@@ -583,10 +688,9 @@ query db $ do
 > exceptions: both are direct index lookups.
 
 ### Indexed lookups
-`matchBy` names a record type and one of its fields, and gives you the
-entities whose field holds a value. Its field name and value type are checked
-like `e.name`. `Key`, `Maybe` and `Set` fields match on the value inside, and a
-`Ref` field matches the entity it points at:
+`matchBy @A @"f" v` gives the `A`s whose field `f` holds `v`, through the index.
+The field and value type are checked like `e.name`. `Maybe` and `Set` fields
+match the value inside, and a `Ref` field matches its target:
 
 ```haskell
 query db $ do
@@ -605,10 +709,9 @@ query db $ do
 A typo is caught at compile time: `datomlite: Employee has no field "emial"`.
 
 ### Typed fields
-Record-dot on a matched entity reads the record's own field, so `e.emial` or
-`e.name == 5` won't compile. Fields have their declared types (`e.nickname` is
-a `Maybe Text`), except that `Key` is stripped: `e.email` is a `Text`.
-`recordOf e` is the whole record, and `refOf e` is its `Ref`.
+`e.name` reads the record's own field with its declared type (`e.nickname` is a
+`Maybe Text`), so `e.emial` or `e.name == 5` won't compile. `recordOf e` is the
+whole record, and `refOf e` is its `Ref`.
 
 ### Reverse refs
 `refOf` is how you join the other way, from a department to the employees
@@ -705,36 +808,34 @@ query (asOf (basisT db) db') names   -- ["Matt","Alice","Bob"]
 query (since (basisT db) db2) names  -- ["Carol","Dan","Eve"]
 ```
 
-`commitIO` stamps each transaction with the clock. Plain `commit` is pure so
-it leaves the time off, and `commitAt t` stamps it with a `t` of your own:
+`transact` stamps each transaction with the clock. `commit` is pure, so it
+doesn't. `commitAt t` uses a time you give it:
 
 ```haskell
 conn <- connect db
 before <- getCurrentTime
-_ <- commitIO conn (new (Employee "d@x.io" "Dan" eng 90000 mempty Nothing))
-now <- dbOf conn
+Right (_, now) <- transact conn [Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)]
 
-length (loadAll @Employee (asOfTime before now))  -- 3, before Dan
-length (loadAll @Employee now)                    -- 4
+length (every @Employee (asOfTime before now))  -- 3, before Dan
+length (every @Employee now)                    -- 4
 ```
 
-An unstamped transaction counts as happening with the stamp before it, so the
-pure seed above is there at any time. Times never go backwards, even if the
-clock does. Each one is logged as a `db/txInstant` datom so it's in
-`trDatoms` and `history` and survives a save.
+An unstamped transaction counts as happening at the stamp before it, so the pure
+seed above shows up at any time. Times never go backwards, even if the clock
+does. Each is logged as a `db/txInstant` datom, so it's in `history` and
+survives a save.
 
-A `since` view holds only the newer facts, so an entity created before `t` and
-changed after it is just a fragment there. Typed reads skip it and see the
-entities that are whole within the window. Use `datoms` on the view to get
-every fact.
+A `since` view only has the newer facts, so an entity created before `t` and
+changed after is a fragment there. Typed reads skip fragments. Use `datoms` on
+the view for every fact.
 
 Snapshot vs what-if:
 ```haskell
-let whatIf = commit_ db2 (new (Employee "z@x.io" "Zed" eng 1 mempty Nothing))
+let whatIf = commit_ db2 [Insert (Employee "z@x.io" "Zed" eng 1 mempty Nothing)]
 
-length (loadAll @Employee db2)           -- 6
-length . loadAll @Employee <$> whatIf    -- Right 7, includes Zed
-length (loadAll @Employee db2)           -- 6, still
+length (every @Employee db2)           -- 6
+length . every @Employee <$> whatIf    -- Right 7, includes Zed
+length (every @Employee db2)           -- 6, still
 ```
 
 ## History of every entity
@@ -750,6 +851,8 @@ Each `Datom` carries its tx and an `Assert` or `Retract`, and nothing is
 overwritten. A trail survives retraction:
 
 ```haskell
+Just carol = refOf <$> find @Employee "c@x.io" db2
+
 [ (dAttr d, dValue d, dTx d, dOp d) | d <- history db3, dEntity d == refId carol ]
 -- [ ("Employee/email",  VText "c@x.io",    TxId 2, Assert)
 -- , ("Employee/name",   VText "Carol",     TxId 2, Assert)
@@ -759,15 +862,14 @@ overwritten. A trail survives retraction:
 -- , ... ]
 ```
 
-To go around the schema entirely, with stringly-typed `transact` and
-`assert`/`retract` or index probes like `lookupValue` and `entitiesWith`,
-import `Datomlite.Raw`. Raw writes skip typing and uniqueness checks, so reach
-for it deliberately.
+To skip the schema, import `Datomlite.Raw`: stringly-typed `transact` and
+`assert`/`retract`, plus index probes like `lookupValue` and `entitiesWith`. Raw
+writes skip type and uniqueness checks. Import it qualified, since its
+`transact` and `retract` clash with the main ones.
 
 ## Diff two databases
-When your database is a value, you can diff it against another one, such as
-the same database with a speculative transaction applied. An unchanged fact is
-the same `Datom` in both, so a diff is list difference over `datoms`:
+Two db values diff like two lists. An unchanged fact is the same `Datom` in
+both, so a diff is list difference over `datoms`:
 
 ```haskell
 -- db' is db after the Tx blocks example: a rename plus a new order
@@ -792,9 +894,8 @@ query db2 $ do
 ```
 
 ## Existential subgoals (semi-joins)
-When writing queries, you often ask "does at least one such row exist?"
-without wanting the matched row in your output. That's `exists`, which yields
-one row however many matches there are:
+Sometimes you only need to know a match exists, not what it is. `exists` keeps
+the row once, however many matches there are:
 
 ```haskell
 -- orders whose buyer exists as a registered Employee
@@ -806,9 +907,9 @@ query db $ do
 ```
 
 ## Rules
-A rule is a function returning a `Query`. It is named and reusable, and a call
-works anywhere in a do-block as if you'd inlined its body. `<|>` is Datalog
-disjunction (either branch holds). A rule that calls itself is recursive.
+A rule is just a function returning a `Query`. Call it anywhere in a do-block.
+`<|>` is disjunction (either branch holds), and a rule that calls itself is
+recursive.
 
 ### Recursive rules
 
@@ -819,33 +920,38 @@ Let's imagine we have a hierarchy of officers...
 
 ```haskell
 data Off = Off
-  { officer :: Key Text
+  { officer :: Text
   , boss    :: Maybe (Ref Off)
-  } deriving (Generic, Entity)
+  } deriving (Generic)
 
-Right db = commit_ emptyDb $ do
-  napoleon <- new (Off "Napoléon" Nothing)
-  davout   <- new (Off "Davout"   (Just napoleon))
-  ney      <- new (Off "Ney"      (Just napoleon))
-  murat    <- new (Off "Murat"    (Just napoleon))
-  _        <- new (Off "Friant"   (Just davout))
-  _        <- new (Off "Gudin"    (Just davout))
-  _        <- new (Off "Lasalle"  (Just murat))
-  new (Off "Marchand" (Just ney))
+instance Entity Off where
+  type Identity Off = '["officer"]
+
+Right db = commit_ emptyDb
+  [ Insert (Off "Napoléon" Nothing)
+  , Insert (Off "Davout"   (under "Napoléon"))
+  , Insert (Off "Ney"      (under "Napoléon"))
+  , Insert (Off "Murat"    (under "Napoléon"))
+  , Insert (Off "Friant"   (under "Davout"))
+  , Insert (Off "Gudin"    (under "Davout"))
+  , Insert (Off "Lasalle"  (under "Murat"))
+  , Insert (Off "Marchand" (under "Ney"))
+  ]
+  where under = Just . ref @Off
 
 -- a direct report, or anyone below one
-subordinates :: Var Off -> Query (Var Off)
+subordinates :: Stored Off -> Query (Stored Off)
 subordinates o = do
   s <- matchBy @Off @"boss" (refOf o)
   pure s <|> subordinates s
 
 -- their boss, or anyone above them
-bosses :: Var Off -> Query (Var Off)
+bosses :: Stored Off -> Query (Stored Off)
 bosses o = do
   b <- follow =<< oneOf o.boss
   pure b <|> bosses b
 
-named :: Text -> Query (Var Off)
+named :: Text -> Query (Stored Off)
 named = matchBy @Off @"officer"
 ```
 
@@ -900,16 +1006,20 @@ entity once. It's the fixed point of the rule, so cycles are fine.
 </p>
 
 ```haskell
-data Place = Place { code :: Key Text } deriving (Generic, Entity)
+data Place = Place { code :: Text } deriving (Generic)
 data Road  = Road { from :: Ref Place, to :: Ref Place } deriving (Generic, Entity)
 
-Right db = commit_ emptyDb $ do
-  [par, lyo, mar, nce, bor] <- traverse (new . Place) ["PAR", "LYO", "MAR", "NCE", "BOR"]
-  traverse_ (new . uncurry Road)
-    [(par, lyo), (lyo, mar), (mar, par) {- cycle -}, (lyo, nce), (par, bor)]
+instance Entity Place where
+  type Identity Place = '["code"]
+
+Right db = commit_ emptyDb $
+     [ Insert (Place c) | c <- ["PAR", "LYO", "MAR", "NCE", "BOR"] ]
+  ++ [ Insert (Road (at a) (at b))
+     | (a, b) <- [("PAR", "LYO"), ("LYO", "MAR"), ("MAR", "PAR") {- cycle -}, ("LYO", "NCE"), ("PAR", "BOR")] ]
+  where at = ref @Place
 
 -- one road away
-next :: Var Place -> Query (Var Place)
+next :: Stored Place -> Query (Stored Place)
 next p = do
   r <- matchBy @Road @"from" (refOf p)
   follow r.to
@@ -930,20 +1040,24 @@ Seven people, six edges, two components:
 </p>
 
 ```haskell
-data Person = Person { handle :: Key Text } deriving (Generic, Entity)
+data Person = Person { handle :: Text } deriving (Generic)
 data Friend = Friend { a :: Ref Person, b :: Ref Person } deriving (Generic, Entity)
 
-Right db = commit_ emptyDb $ do
-  [alice, bob, carol, dave, erin, frank, grace] <-
-    traverse (new . Person) ["alice", "bob", "carol", "dave", "erin", "frank", "grace"]
-  traverse_ (new . uncurry Friend)
-    [(alice, bob), (alice, carol), (bob, dave), (carol, dave), (dave, erin), (frank, grace)]
+instance Entity Person where
+  type Identity Person = '["handle"]
 
-knows :: Var Person -> Query (Var Person)
+Right db = commit_ emptyDb $
+     [ Insert (Person h) | h <- ["alice", "bob", "carol", "dave", "erin", "frank", "grace"] ]
+  ++ [ Insert (Friend (who x) (who y))
+     | (x, y) <- [ ("alice", "bob"), ("alice", "carol"), ("bob", "dave")
+                 , ("carol", "dave"), ("dave", "erin"), ("frank", "grace") ] ]
+  where who = ref @Person
+
+knows :: Stored Person -> Query (Stored Person)
 knows x = (follow . (.b) =<< matchBy @Friend @"a" (refOf x))
       <|> (follow . (.a) =<< matchBy @Friend @"b" (refOf x))
 
-handleIs :: Text -> Query (Var Person)
+handleIs :: Text -> Query (Stored Person)
 handleIs = matchBy @Person @"handle"
 
 -- Alice's cluster. She's in it too, through any friend and back
@@ -963,27 +1077,35 @@ Results come out nearest first. `closure` is lazy so `exists (closure ...)`
 stops at the first hit.
 
 ## Sharing the db across threads
-`Db` is a plain value, so pass it anywhere. When threads need to share one
-current db, a `Conn` is a mutable cell holding it, and `commitIO` commits a
-`Tx` atomically, with the **same** uniqueness checks as `commit`:
+`Db` is a plain value, so pass it anywhere. When threads need one shared current
+db, use a `Conn`, a mutable cell holding it. `transact` is `commit` on that
+cell. It takes the same writes, runs the **same** checks and returns the same
+result and new db. The `Conn` then holds that db:
 
 ```
+commit   db   w     Either TxError (r, Db)        pure, the db is yours
+transact conn w     IO (Either TxError (r, Db))   the Conn holds the new db
 connect db          IO Conn
-dbOf conn           IO Db, a snapshot
-commitIO conn tx    IO (Either TxError a)
+snapshot conn       IO Db, whatever the Conn holds right now
 ```
+
+`r` is `()` for a list and the block's result for a `Tx`.
 
 ```haskell
 conn <- connect emptyDb
-Right matt <- commitIO conn $ do
-  eng <- new (Department "ENG" "Engineering")
-  new (Employee "m@x.io" "Matt" eng 120000 mempty Nothing)
+Right ((), db) <- transact conn
+  [ Insert (Department "ENG" "Engineering")
+  , Insert (Employee "m@x.io" "Matt" (ref @Department "ENG") 120000 mempty Nothing)
+  ]
 
-now <- dbOf conn
-load matt now  -- Just (Employee ...)
+(.name) <$> find @Employee "m@x.io" db  -- Just "Matt"
 ```
 
-Everything else stays pure. Hand `now` to any function that reads.
+The `db` you get back is the one your commit made, even if another thread has
+committed since. `snapshot conn` reads whatever is current, other threads'
+commits included.
+
+Everything else stays pure. Hand `db` to any function that reads.
 
 ## Listening and watching
 A `Conn` holds its db in a `TVar`, so a subscriber is just a thread that waits
@@ -999,7 +1121,7 @@ awaitAfter conn t    STM Db, blocks until a commit newer than t
 stop <- listen conn $ \r ->
   putStrLn (show (trTxId r) <> ": " <> show (length (trDatoms r)) <> " datoms")
 
-_ <- watch conn (length . loadAll @Employee) $ \n ->
+_ <- watch conn (length . every @Employee) $ \n ->
   putStrLn (show n <> " employees")
 
 stop   -- unsubscribe
@@ -1008,18 +1130,17 @@ stop   -- unsubscribe
 - **In order, none missed.** Each subscriber sees commits in tx order. A
   listener that falls behind catches up from the log, one report per commit.
 - **Isolated.** Callbacks run on the subscriber's own thread, so they may read
-  or commit. An exception is reported on stderr and never reaches `commitIO`.
+  or commit. An exception is reported on stderr and never reaches `transact`.
 - **`watch` shows the latest result.** `q` runs on the newest db, so if commits
   land faster than `f` keeps up, it skips the results in between.
-- **Asynchronous.** A callback may not have run yet when `commitIO` returns.
+- **Asynchronous.** A callback may not have run yet when `transact` returns.
   To wait for a commit yourself, use `awaitAfter`. It is plain STM, so it
   composes with `orElse` and timeouts.
 
 ## Saving and restoring
-The log is the database, so saving one means saving its datoms, and
-`fromHistory` turns them back into a `Db`, past included. `Datom` has `Show`
-and `Read` instances that round-trip, so a datom per line works as a file
-format with no extra dependencies:
+The log is the database. Save its datoms and `fromHistory` rebuilds the `Db`,
+past included. `Datom`'s `Show` and `Read` round-trip, so one datom per line is
+a file format with no extra deps:
 
 ```
 history db           [Datom], every fact, oldest first
@@ -1044,12 +1165,12 @@ conn <- connect =<< restore "app.log"
 stop <- listen conn $ \r -> appendFile "app.log" (unlines (map show (trDatoms r)))
 ```
 
-A restored db picks up where the old one stopped: the same entities, the same
-past for `asOf` and `asOfTime`, and new entity ids that never reuse one the log mentions.
+A restored db picks up where the old one stopped: same entities, same past for
+`asOf` and `asOfTime`, and new ids never reuse one from the log.
 
-- **`listen` is asynchronous**, so a crash right after a `commitIO` can lose
+- **`listen` is asynchronous**, so a crash right after a `transact` can lose
   the last commits. If each commit must be on disk before you move on, append
-  `trDatoms` yourself after `commitIO` returns.
+  `trDatoms` yourself after `transact` returns.
 - **`Show` is simple, not fast.** For a big log, write your own encoding. Every
   `Datom`, `Value` and id constructor is exported (ids from `Datomlite.Raw`).
 

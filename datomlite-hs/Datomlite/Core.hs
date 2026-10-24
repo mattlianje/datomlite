@@ -49,7 +49,7 @@ module Datomlite.Core
     -- * The IO edge
   , Conn
   , connect
-  , dbOf
+  , snapshot
   , atomicUpdate
   , awaitAfter
   , txsAfter
@@ -93,6 +93,10 @@ data Value
   | VBytes   !ByteString
   | VInstant !UTCTime
   | VDay     !Day
+    -- | The entity holding a value for an identity attribute. Only in writes:
+    -- 'Datomlite.ref' makes one and commit swaps in the 'VRef' it names, so
+    -- it's never stored.
+  | VLookup  !Attr !Value
   deriving (Show, Read)
 
 instance Eq Value where
@@ -108,12 +112,14 @@ instance Ord Value where
   compare (VBytes a)   (VBytes b)   = compare a b
   compare (VInstant a) (VInstant b) = compare a b
   compare (VDay a)     (VDay b)     = compare a b
+  compare (VLookup a v) (VLookup b w) = compare (a, v) (b, w)
   compare a b = compare (tag a) (tag b)
     where
       tag :: Value -> Int
       tag v = case v of
         VInt _ -> 0; VText _ -> 1; VBool _ -> 2; VRef _ -> 3; VDouble _ -> 4
         VInteger _ -> 5; VBytes _ -> 6; VInstant _ -> 7; VDay _ -> 8
+        VLookup _ _ -> 9
 
 -- A total order on doubles: NaN equals NaN and sorts last
 compareDouble :: Double -> Double -> Ordering
@@ -372,12 +378,12 @@ data Conn = Conn (TVar Db) (MVar ())
 connect :: Db -> IO Conn
 connect db = Conn <$> newTVarIO db <*> newMVar ()
 
--- | The current 'Db'.
-dbOf :: Conn -> IO Db
-dbOf (Conn v _) = readTVarIO v
+-- | The connection's 'Db' right now. A value, so later commits don't touch it.
+snapshot :: Conn -> IO Db
+snapshot (Conn v _) = readTVarIO v
 
 -- | Run a pure step on the connection's 'Db' and swap in the result.
--- 'Datomlite.Schema.commitIO' is built on this.
+-- 'Datomlite.Schema.transact' is built on this.
 --
 -- Writers take turns and the step is fully evaluated before the swap. A step
 -- never re-runs and readers only ever see a finished 'Db'. A step that throws

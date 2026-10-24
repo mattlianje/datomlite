@@ -44,7 +44,7 @@ listen conn f = subscribe conn (const []) (\seen db -> map f (txsAfter seen db))
 -- current answer. Errors are handled as in 'listen'.
 --
 -- @
--- stop <- watch conn (length . loadAll \@Employee) $ \\n -> putStrLn (show n <> " employees")
+-- stop <- watch conn (length . every \@Employee) $ \\n -> putStrLn (show n <> " employees")
 -- @
 watch :: Eq a => Conn -> (Db -> a) -> (a -> IO ()) -> IO (IO ())
 watch conn q f = do
@@ -60,7 +60,7 @@ watch conn q f = do
 subscribe :: Conn -> (Db -> [IO ()]) -> (TxId -> Db -> [IO ()]) -> IO (IO ())
 subscribe conn start step = do
   stop <- newTVarIO False
-  db0  <- dbOf conn
+  db0  <- snapshot conn
   let deliver = mapM_ $ \act -> do
         stopped <- readTVarIO stop
         unless stopped (guarded act)

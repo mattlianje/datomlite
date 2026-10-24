@@ -1,7 +1,11 @@
 -- |
 -- Going around the schema: untyped writes, index probes and the shredding
--- machinery. 'transact' skips 'Datomlite.Key' checks and typing... so prefer
--- 'Datomlite.commit' unless you mean it.
+-- machinery. 'transact' skips 'Datomlite.Identity' checks and typing, and
+-- writes a lookup ref ('VLookup') as is... so prefer 'Datomlite.commit' unless
+-- you mean it.
+--
+-- Its 'retract' and 'transact' are the raw ones, so import it qualified next
+-- to "Datomlite": @import qualified Datomlite.Raw as Raw@.
 module Datomlite.Raw
   ( -- * Bare ids
     EntityId (..)
@@ -34,4 +38,4 @@ module Datomlite.Raw
   ) where
 
 import Datomlite.Core
-import Datomlite.Schema
+import Datomlite.Schema hiding (retract, transact)

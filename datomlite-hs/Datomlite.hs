@@ -2,23 +2,45 @@
 -- A lightweight immutable database. The 'Db' is a plain value... 'commit'
 -- hands back a new one and every past state stays queryable.
 --
--- Records are the schema. A field's type says how it is stored:
+-- Records are the schema. A field's type says how it is stored and
+-- 'Identity' names the fields that identify an entity:
 --
 -- @
--- \{\-\# LANGUAGE DeriveGeneric, DeriveAnyClass, OverloadedRecordDot, OverloadedStrings \#\-\}
+-- \{\-\# LANGUAGE DeriveGeneric, DeriveAnyClass, DataKinds, TypeFamilies \#\-\}
+-- \{\-\# LANGUAGE OverloadedRecordDot, OverloadedStrings \#\-\}
 -- import Datomlite
 --
--- data Department = Department { code :: Key Text, deptName :: Text }
---   deriving (Generic, Entity)
+-- data Department = Department { code :: Text, deptName :: Text }
+--   deriving Generic
+-- instance Entity Department where
+--   type Identity Department = '[\"code\"]
 --
 -- data Employee = Employee
---   { email  :: Key Text         -- unique
---   , name   :: Text             -- one value
+--   { email  :: Text             -- one value
+--   , name   :: Text
 --   , dept   :: Ref Department   -- another entity
 --   , skills :: Set Text         -- many values
 --   , nick   :: Maybe Text       -- optional
---   } deriving (Generic, Entity)
+--   } deriving Generic
+-- instance Entity Employee where
+--   type Identity Employee = '[\"email\"]   -- unique, and what 'upsert' goes by
 -- @
+--
+-- Writes are a list of 'Write's that commit all at once. A 'ref' names an
+-- entity by its identity, so records in one list can point at each other:
+--
+-- @
+-- commit_ db
+--   [ Upsert (Department \"ENG\" \"Engineering\")
+--   , Upsert (Employee \"m\@x.io\" \"Max\" (ref \@Department \"ENG\") mempty Nothing)
+--   ]
+-- @
+--
+-- A 'Tx' do-block ('insert', 'upsert', 'update', 'retract') is for steps that
+-- need each other's results. 'commit' takes either.
+--
+-- Every read ('load', 'every', 'find' and queries) hands back a 'Stored'
+-- record: @p.name@ reads a field and 'refOf' gives its 'Ref'.
 --
 -- Queries are do-blocks over those records:
 --
@@ -30,9 +52,8 @@
 --   pure (e.email, e.name)
 -- @
 --
--- A wrong field or type is a compile error. 'Key' is dropped on read so
--- @e.email@ is just 'Data.Text.Text'. 'match' scans... 'follow' and 'matchBy'
--- go straight to the entity.
+-- A wrong field or type is a compile error. 'match' scans... 'follow' and
+-- 'matchBy' go straight to the entity.
 --
 -- "Datomlite.Raw" goes around the schema when you want bare attributes and
 -- entity ids.
@@ -56,21 +77,26 @@ module Datomlite
   , refId
 
     -- * Schema: records are the schema
-  , Entity (ename)
-  , Key (..)
+  , Entity (Identity, ename)
   , Ref
+  , ref
+  , refBy
   , ToValue (..)
   , FromValue (..)
 
     -- * Writing: build a 'Tx', then commit it
   , Tx
-  , new
-  , save
+  , insert
+  , insert_
+  , upsert
+  , upsert_
   , update
   , setField
-  , retractEntity
+  , retract
   , txDb
   , abort
+  , Write (..)
+  , Writes (Result)
   , commit
   , commit_
   , commitAt
@@ -80,8 +106,13 @@ module Datomlite
   , EntityId
 
     -- * Reading records
+  , Stored
+  , refOf
+  , recordOf
   , load
-  , loadAll
+  , every
+  , find
+  , findBy
   , LoadError (..)
 
     -- * Querying: do-blocks over records
@@ -94,9 +125,6 @@ module Datomlite
   , closure
   , exists
   , none
-  , Var
-  , refOf
-  , recordOf
 
     -- * Window functions over results
   , Window
@@ -112,8 +140,8 @@ module Datomlite
     -- * The IO edge
   , Conn
   , connect
-  , dbOf
-  , commitIO
+  , snapshot
+  , transact
 
     -- * Reacting to commits
   , listen
@@ -122,7 +150,7 @@ module Datomlite
   , TxReport (..)
   ) where
 
-import Datomlite.Core
+import Datomlite.Core hiding (retract, transact)
 import Datomlite.Schema
 import Datomlite.Query
 import Datomlite.Watch

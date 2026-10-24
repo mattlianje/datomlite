@@ -24,49 +24,20 @@ module Datomlite.Query
     -- * Subqueries
   , exists
   , none
-
-    -- * Matched entities
-  , Var
-  , refOf
-  , recordOf
   ) where
 
 import  Control.Applicative (Alternative (..))
 import  Control.Monad       (MonadPlus, ap)
-import  Data.Coerce         (Coercible, coerce)
 import  Data.Foldable       (toList)
 import  Data.Proxy          (Proxy (..))
 import  Data.Sequence       (Seq (..), (><))
 import qualified Data.Sequence as Seq
-import  Data.Set            (Set)
 import qualified Data.Set   as Set
-import  GHC.Records         (HasField (..))
-import  GHC.TypeLits        (KnownSymbol, Symbol, symbolVal)
+import  GHC.Records         (HasField)
+import  GHC.TypeLits        (KnownSymbol, symbolVal)
 
 import  Datomlite.Core
 import  Datomlite.Schema
-
--- | An entity bound in a query. Read its fields with @e.name@ and its 'Ref'
--- with 'refOf'.
-data Var a = Var (Ref a) a
-  deriving (Eq, Show)
-
--- | The 'Ref' of a matched entity. Handy to compare with a ref field:
--- @guard (e.dept == refOf d)@.
-refOf :: Var a -> Ref a
-refOf (Var r _) = r
-
--- | The whole record of a matched entity.
-recordOf :: Var a -> a
-recordOf (Var _ a) = a
-
--- | @e.field@ is the record's own field with 'Key' dropped.
-instance
-  ( HasField name a t
-  , u ~ Unkey t
-  , Coercible t u
-  ) => HasField (name :: Symbol) (Var a) u where
-  getField (Var _ a) = coerce (getField @name a :: t)
 
 -- | Each bind ranges over candidates and 'Control.Monad.guard' prunes them.
 -- A failed pattern match (@Just n <- pure e.nick@) drops the candidate too.
@@ -95,41 +66,40 @@ instance MonadPlus Query
 query :: Db -> Query a -> [a]
 query db (Query f) = f db
 
--- | Range over every entity of a type.
-match :: forall a. Entity a => Query (Var a)
-match = Query $ \db -> [ Var r a | (r, a) <- loadAll @a db ]
+-- | Range over every entity of a type ('every' inside a query).
+match :: forall a. Entity a => Query (Stored a)
+match = Query (every @a)
 
 -- | Like 'match' but only the entities whose field holds a value. Goes through
 -- the index:
 --
 -- @
--- e <- matchBy \@Employee \@\"email\" \"m\@x.io\"   -- a Key
+-- e <- matchBy \@Employee \@\"email\" \"m\@x.io\"   -- an identity
 -- e <- matchBy \@Employee \@\"dept\" (refOf d)     -- a reverse ref
 -- e <- matchBy \@Employee \@\"skills\" haskell     -- one of many
+-- e <- matchBy \@Employee \@\"dept\" (ref \@Department \"ENG\")
 -- @
 --
--- The field and value type are checked against the record. For a 'Key',
--- 'Maybe' or 'Set' field just pass the value inside.
+-- The field and value type are checked against the record. For a 'Maybe' or
+-- 'Set' field just pass the value inside.
 matchBy
   :: forall a name t
    . ( Entity a, HasNamedField name a, KnownSymbol name, HasField name a t
      , ToValue (FieldValue t) )
-  => FieldValue t -> Query (Var a)
+  => FieldValue t -> Query (Stored a)
 matchBy v = Query $ \db ->
-  [ Var r a | e <- entitiesWith attr (toValue v) db, let r = Ref e, Just a <- [load r db] ]
-  where attr = attrName (ename (Proxy @a)) (symbolVal (Proxy @name))
-
--- | What 'matchBy' takes for a field.
-type family FieldValue t where
-  FieldValue (Key a)   = a
-  FieldValue (Maybe a) = a
-  FieldValue (Set a)   = a
-  FieldValue t         = t
+  [ s | w <- resolved db (toValue v), e <- entitiesWith attr w db, Just s <- [load (Ref e) db] ]
+  where
+    attr = attrName (ename (Proxy @a)) (symbolVal (Proxy @name))
+    -- a lookup ref matches the entity it names (or nothing)
+    resolved db (VLookup a w) = maybe [] (pure . VRef) (uniqueAt a w db)
+    resolved _  w             = [w]
 
 -- | Walk a 'Ref' to its entity (or to nothing if it was retracted). The cheap
--- join: @d <- follow e.dept@.
-follow :: Entity a => Ref a -> Query (Var a)
-follow r = Query $ \db -> [ Var r a | Just a <- [load r db] ]
+-- join: @d <- follow e.dept@. A lookup ref works too:
+-- @d <- follow (ref \@Department \"ENG\")@.
+follow :: Entity a => Ref a -> Query (Stored a)
+follow r = Query $ \db -> maybe [] pure (load r db)
 
 -- | Range over a 'Data.Set.Set' or 'Maybe' field: @s <- oneOf e.skills@.
 oneOf :: Foldable f => f a -> Query a
@@ -148,7 +118,7 @@ oneOf xs = Query (const (toList xs))
 -- @
 --
 -- Breadth first, nearest first. Lazy so 'exists' stops at the first hit.
-closure :: (Var a -> Query (Var a)) -> Var a -> Query (Var a)
+closure :: (Stored a -> Query (Stored a)) -> Stored a -> Query (Stored a)
 closure step x = Query $ \db ->
   let go _ Empty = []
       go seen (v :<| vs)
