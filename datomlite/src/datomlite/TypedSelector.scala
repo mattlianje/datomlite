@@ -45,10 +45,8 @@ final class TypedSelector[T] private[datomlite] (
       val afterOffset = if offsetN > 0 then sorted.drop(offsetN) else sorted
       limitN.fold(afterOffset)(afterOffset.take)
     }
-    val decoded =
-      sliced.map(row => row.lazyZip(finds).map((v, t) => TypedSelector.decodeColumn(t, v)))
-    if isUnary then decoded.map(_.head.asInstanceOf[T])
-    else decoded.map(row => Tuple.fromArray(row.toArray).asInstanceOf[T])
+    if isUnary then sliced.map(_.head.asInstanceOf[T])
+    else sliced.map(row => Tuple.fromArray(row.toArray).asInstanceOf[T])
   }
 
   private def projectFlat(bindings: Vector[Map[String, Any]]): Vector[Vector[Any]] =
@@ -142,25 +140,6 @@ private[datomlite] object TypedSelector {
       windowKernel(out, sorted, bindings, w)
     }
     out.toVector
-  }
-
-  /** Map one projected column from stored form back to the find term's type
-    *
-    * Rows stay in stored form through dedup, sort and slicing since that's what `Compare` orders.
-    * Decoding comes last. `min` / `max` / `lag` / `lead` pick one of the stored values so decode it
-    * like their argument. Counts, sums and ranks are fresh numbers and stay as is
-    */
-  def decodeColumn(t: Term[?], raw: Any): Any = t match {
-    case f: Term.Field[?] if raw != null => f.codec.decode(raw)
-    case Term.Agg("min" | "max", inner)  => decodeColumn(inner, raw)
-    case w: Term.Window[?] =>
-      w.fn match {
-        case "agg/min" | "agg/max" => decodeColumn(w.args.head, raw)
-        case s"lag:$_" | s"lead:$_" =>
-          raw.asInstanceOf[Option[Any]].map(decodeColumn(w.args.head, _))
-        case _ => raw
-      }
-    case _ => raw
   }
 
   private def varName(t: Term[?]): String = t match {

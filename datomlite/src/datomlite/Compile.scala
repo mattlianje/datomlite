@@ -188,22 +188,12 @@ private[datomlite] object Compile {
 
     val ruleClauses = rules.map(lowerRule)
 
-    val bounds = boundsOf(deferred)
     val bindings = scala.collection.mutable.LinkedHashMap.empty[(String, String), Q.Pattern]
     def ensureBound(t: Term[?]): Unit = t match {
       case f: Term.Field[?] =>
         val key = (f.rowBinding, f.attr)
         if !bindings.contains(key) then
-          bindings.update(
-            key,
-            Q.Pattern(
-              Q.Var(f.rowBinding),
-              f.attr,
-              Q.Var(bindField(f)),
-              f.fallback,
-              bounds.getOrElse(key, Q.Bounds.none)
-            )
-          )
+          bindings.update(key, Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.Var(bindField(f))))
       case _ => ()
     }
 
@@ -211,44 +201,11 @@ private[datomlite] object Compile {
     find.foreach(termsInFind(_).foreach(ensureBound))
 
     val predicateClauses = deferred.collect {
-      case Constraint.Eq(a, b)      => predicate(a, Q.Op.Eq, b)
-      case Constraint.Cmp(op, a, b) => predicate(a, op, b)
+      case Constraint.Eq(a, b)      => Q.Predicate(termAsQ(a), Q.Op.Eq, termAsQ(b))
+      case Constraint.Cmp(op, a, b) => Q.Predicate(termAsQ(a), op, termAsQ(b))
     }
 
-    /* Ranged patterns go first so a row var gets pinned by an index slice instead of a scan */
-    val (ranged, open) = bindings.values.toVector.partition(!_.bounds.isEmpty)
-    foldedPatterns ++ ruleClauses ++ ranged ++ open ++ predicateClauses
-  }
-
-  /** Index range per `(row, attr)` from the `field <op> const` comparisons */
-  private def boundsOf(deferred: Vector[Constraint]): Map[(String, String), Q.Bounds] = {
-    def bound(
-        f: Term.Field[?],
-        op: Q.Op,
-        k: Term.Const[?]
-    ): Option[((String, String), Q.Bounds)] = {
-      val v = Some(f.codec.encode(k.value))
-      val b = op match {
-        case Q.Op.Gt | Q.Op.Ge => Some(Q.Bounds(v, None))
-        case Q.Op.Lt | Q.Op.Le => Some(Q.Bounds(None, v))
-        case _                 => None
-      }
-      b.map((f.rowBinding, f.attr) -> _)
-    }
-    def flip(op: Q.Op): Q.Op = op match {
-      case Q.Op.Gt => Q.Op.Lt
-      case Q.Op.Ge => Q.Op.Le
-      case Q.Op.Lt => Q.Op.Gt
-      case Q.Op.Le => Q.Op.Ge
-      case other   => other
-    }
-    deferred
-      .flatMap {
-        case Constraint.Cmp(op, f: Term.Field[?], k: Term.Const[?]) => bound(f, op, k)
-        case Constraint.Cmp(op, k: Term.Const[?], f: Term.Field[?]) => bound(f, flip(op), k)
-        case _                                                      => None
-      }
-      .groupMapReduce(_._1)(_._2)(_ & _)
+    foldedPatterns ++ ruleClauses ++ bindings.values ++ predicateClauses
   }
 
   /** Split constraints into (AVET-foldable patterns, deferred non-pattern leaves, rule apps)
@@ -276,9 +233,9 @@ private[datomlite] object Compile {
 
   private def tryFoldEq(a: Term[?], b: Term[?]): Option[Q.Pattern] = (a, b) match {
     case (f: Term.Field[?], k: Term.Const[?]) =>
-      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.C(f.codec.encode(k.value)), f.fallback))
+      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.C(k.value)))
     case (f: Term.Field[?], r: Term.RowRef[?]) =>
-      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.Var(r.binding), f.fallback))
+      Some(Q.Pattern(Q.Var(f.rowBinding), f.attr, Q.Var(r.binding)))
     case _ => None
   }
 
@@ -298,15 +255,6 @@ private[datomlite] object Compile {
     case Term.Agg(_, inner) => Vector(inner)
     case w: Term.Window[?]  => w.args ++ w.partition ++ w.order.map(_.term)
     case other              => Vector(other)
-  }
-
-  /** Literals compare against the field's stored form so encode them with its codec */
-  private def predicate(a: Term[?], op: Q.Op, b: Term[?]): Q.Predicate = (a, b) match {
-    case (f: Term.Field[?], k: Term.Const[?]) =>
-      Q.Predicate(termAsQ(f), op, Q.C(f.codec.encode(k.value)))
-    case (k: Term.Const[?], f: Term.Field[?]) =>
-      Q.Predicate(Q.C(f.codec.encode(k.value)), op, termAsQ(f))
-    case _ => Q.Predicate(termAsQ(a), op, termAsQ(b))
   }
 
   private def termAsQ(t: Term[?]): Q.Term = t match {

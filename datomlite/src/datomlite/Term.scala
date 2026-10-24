@@ -12,18 +12,8 @@ object Term {
     private[datomlite] def lower: Q.Term = Q.C(value)
   }
 
-  /** A field projection from a row binding: `e.dept` becomes `Field(eBinding, "Worker/dept")`
-    *
-    * `codec` turns literals compared against the field into stored form and decodes projected
-    * values back. `fallback` is the stored form of the field's default... used for entities written
-    * before the field existed
-    */
-  final case class Field[T](
-      rowBinding: String,
-      attr: String,
-      codec: Codec[Any] = Codec.eid,
-      fallback: Option[Any] = None
-  ) extends Term[T] {
+  /** A field projection from a row binding: `e.dept` becomes `Field(eBinding, "Worker/dept")`. */
+  final case class Field[T](rowBinding: String, attr: String) extends Term[T] {
     private[datomlite] def lower: Q.Term = Q.Var(s"$rowBinding::$attr")
   }
 

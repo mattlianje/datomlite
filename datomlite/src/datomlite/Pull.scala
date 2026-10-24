@@ -73,10 +73,10 @@ object Pull {
 
   /** Macro... rewrites `pull.fieldName` based on the field's case-class shape
     *
-    *   - scalar `T` ⇒ `T`, decoded through the field's codec
-    *   - `Set[T]` / `Option[T]` of values ⇒ `Set[T]` / `Option[T]`, decoded per element
-    *   - ref `R` (with `Entity[R]` in scope) ⇒ `Pull[R]`
-    *   - `Set[R]` ⇒ `MultiPull[R]`, `Option[R]` ⇒ `Option[Pull[R]]`
+    *   - scalar `T` ⇒ `ctx.scalarOf(...).asInstanceOf[T]`
+    *   - `Set[T]` of opaque value ⇒ `ctx.multiValueOf(...).asInstanceOf[Set[T]]`
+    *   - ref `R` (with `Entity[R]` in scope) ⇒ `new Pull[R](ctx, refEid, refEntity)`
+    *   - `Set[R]` (multi-ref) ⇒ `new MultiPull[R](pulls)`
     *
     * Unknown field is a compile error. Ref-target Entity is fetched at runtime via
     * `parent.entity.shapes(idx).target()`, so no implicit search at the splice site
@@ -95,6 +95,7 @@ object Pull {
     }
 
     val fieldType = typeRepr.memberType(fieldSym).widen
+    val fieldNameExpr = Expr(fieldName)
     val idxExpr = Expr(caseFields.indexWhere(_.name == fieldName))
 
     def isRefType(t: TypeRepr): Boolean =
@@ -105,71 +106,66 @@ object Pull {
 
     fieldType match {
       case AppliedType(tycon, List(elem)) if tycon =:= TypeRepr.of[Set] =>
-        elem.asType match {
-          case '[t] =>
-            if isRefType(elem) then '{ Pull.multiRef[t]($pull, $idxExpr) }
-            else '{ Pull.multi($pull, $idxExpr).asInstanceOf[Set[t]] }
-        }
+        if isRefType(elem) then
+          elem.asType match {
+            case '[t] =>
+              '{
+                val pullV = $pull
+                val attr = pullV.entity.name + "/" + $fieldNameExpr
+                val eids = pullV.ctx.multiRefEidsOf(pullV.eid, attr)
+                val refEnt = pullV.entity.shapes($idxExpr) match {
+                  case FieldShape.MultiRef(target) => target().asInstanceOf[Entity[t]]
+                  case other => sys.error(s"expected MultiRef shape, got $other")
+                }
+                new MultiPull[t](eids.map(eid => new Pull[t](pullV.ctx, eid, refEnt)))
+              }
+          }
+        else
+          elem.asType match {
+            case '[t] =>
+              '{
+                val pullV = $pull
+                val attr = pullV.entity.name + "/" + $fieldNameExpr
+                pullV.ctx.multiValueOf(pullV.eid, attr).asInstanceOf[Set[t]]
+              }
+          }
 
       case AppliedType(tycon, List(elem)) if tycon =:= TypeRepr.of[Option] =>
         elem.asType match {
           case '[t] =>
-            if isRefType(elem) then '{ Pull.optionalRef[t]($pull, $idxExpr) }
-            else '{ Pull.optional($pull, $idxExpr).asInstanceOf[Option[t]] }
+            '{
+              val pullV = $pull
+              val attr = pullV.entity.name + "/" + $fieldNameExpr
+              pullV.ctx.multiValueOf(pullV.eid, attr).headOption.asInstanceOf[Option[t]]
+            }
+        }
+
+      case _ if isRefType(fieldType) =>
+        fieldType.asType match {
+          case '[t] =>
+            '{
+              val pullV = $pull
+              val attr = pullV.entity.name + "/" + $fieldNameExpr
+              val refEid = pullV.ctx.refEidOf(pullV.eid, attr)
+              val refEnt = pullV.entity.shapes($idxExpr) match {
+                case FieldShape.Ref(target) => target().asInstanceOf[Entity[t]]
+                case other                  => sys.error(s"expected Ref shape, got $other")
+              }
+              new Pull[t](pullV.ctx, refEid, refEnt)
+            }
         }
 
       case _ =>
         fieldType.asType match {
           case '[t] =>
-            if isRefType(fieldType) then '{ Pull.ref[t]($pull, $idxExpr) }
-            else '{ Pull.scalar($pull, $idxExpr).asInstanceOf[t] }
+            '{
+              val pullV = $pull
+              val attr = pullV.entity.name + "/" + $fieldNameExpr
+              pullV.ctx.scalarOf(pullV.eid, attr).asInstanceOf[t]
+            }
         }
     }
   }
-
-  /* Runtime side of `selectDynamic`. `idx` is the field's position in the case class */
-
-  private[datomlite] def scalar(p: Pull[?], idx: Int): Any = {
-    val e = p.entity
-    val field = e.fields(idx)
-    p.ctx.multiValueOf(p.eid, attrOf(p, idx)).headOption match {
-      case Some(v) => e.shapes(idx).codec.decode(v)
-      case None =>
-        e.defaults.get(field).fold(throw new MissingField(e.name, field, Some(p.eid)))(_())
-    }
-  }
-
-  private[datomlite] def multi(p: Pull[?], idx: Int): Set[Any] = {
-    val codec = p.entity.shapes(idx).codec
-    p.ctx.multiValueOf(p.eid, attrOf(p, idx)).map(codec.decode)
-  }
-
-  private[datomlite] def optional(p: Pull[?], idx: Int): Option[Any] = {
-    val codec = p.entity.shapes(idx).codec
-    p.ctx.multiValueOf(p.eid, attrOf(p, idx)).headOption.map(codec.decode)
-  }
-
-  private[datomlite] def ref[R](p: Pull[?], idx: Int): Pull[R] =
-    new Pull[R](p.ctx, p.ctx.refEidOf(p.eid, attrOf(p, idx)), targetOf[R](p, idx))
-
-  private[datomlite] def multiRef[R](p: Pull[?], idx: Int): MultiPull[R] = {
-    val target = targetOf[R](p, idx)
-    new MultiPull[R](p.ctx.multiRefEidsOf(p.eid, attrOf(p, idx)).map(new Pull[R](p.ctx, _, target)))
-  }
-
-  private[datomlite] def optionalRef[R](p: Pull[?], idx: Int): Option[Pull[R]] =
-    p.ctx.multiRefEidsOf(p.eid, attrOf(p, idx)).headOption
-      .map(new Pull[R](p.ctx, _, targetOf[R](p, idx)))
-
-  private def attrOf(p: Pull[?], idx: Int): String = s"${p.entity.name}/${p.entity.fields(idx)}"
-
-  private def targetOf[R](p: Pull[?], idx: Int): Entity[R] =
-    (p.entity.shapes(idx) match {
-      case FieldShape.Ref(target)         => target()
-      case FieldShape.MultiRef(target)    => target()
-      case FieldShape.OptionalRef(target) => target()
-      case other                          => sys.error(s"expected a ref shape, got $other")
-    }).asInstanceOf[Entity[R]]
 
   /** Macro... validates `f` is a single-field selector `(_.field)` on `B`
     *
@@ -221,10 +217,8 @@ object Pull {
     val fieldType = bRepr.memberType(fieldSym).widen
 
     val refTarget: TypeRepr = fieldType match {
-      case AppliedType(tycon, List(elem))
-          if tycon =:= TypeRepr.of[Set] || tycon =:= TypeRepr.of[Option] =>
-        elem
-      case t => t
+      case AppliedType(tycon, List(elem)) if tycon =:= TypeRepr.of[Set] => elem
+      case t                                                            => t
     }
 
     if !(refTarget =:= aRepr) then

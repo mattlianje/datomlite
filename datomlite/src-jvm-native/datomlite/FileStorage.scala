@@ -8,11 +8,7 @@ import java.nio.file.{Files, Path, StandardOpenOption}
   * Storage holds no live OS handle between txs.
   *
   * Format: `<eid>\t<attr>\t<typeTag>\t<value>\t<tx>\t<timeMillis>\t<op>` Tags: `s` String, `l`
-  * Long, `i` Int, `d` Double, `b` Boolean, `I` BigInt, `D` BigDecimal, `v` Vector. Op: `+` Assert,
-  * `-` Retract.
-  *
-  * A Vector is its elements back to back, each as `<tag><length>:<value>` (nested Vectors recurse),
-  * then escaped as a whole like a String.
+  * Long, `i` Int, `d` Double, `b` Boolean. Op: `+` Assert, `-` Retract.
   */
 object FileStorage {
   def apply(path: Path): Storage = {
@@ -87,63 +83,26 @@ object FileStorage {
     Datom(eid, attr, v, tx, time, op)
   }
 
-  private def tagAndValue(v: Any): (String, String) = {
-    val (tag, raw) = tagAndRaw(v)
-    (tag, if tag == "s" || tag == "v" then encodeStr(raw) else raw)
-  }
-
-  private def parseValue(tag: String, raw: String): Any = tag match {
-    case "s" | "v" => parseRaw(tag, decodeStr(raw))
-    case _         => parseRaw(tag, raw)
-  }
-
-  /** Tag plus unescaped text for one value */
-  private def tagAndRaw(v: Any): (String, String) = v match {
-    case vs: Vector[?] => ("v", encodeElems(vs))
-    case s: String     => ("s", s)
-    case b: BigInt     => ("I", b.toString)
-    case b: BigDecimal => ("D", b.toString)
-    case l: Long       => ("l", l.toString)
-    case i: Int        => ("i", i.toString)
-    case d: Double     => ("d", java.lang.Double.toString(d))
-    case b: Boolean    => ("b", b.toString)
+  private def tagAndValue(v: Any): (String, String) = v match {
+    case s: String  => ("s", encodeStr(s))
+    case l: Long    => ("l", l.toString)
+    case i: Int     => ("i", i.toString)
+    case d: Double  => ("d", java.lang.Double.toString(d))
+    case b: Boolean => ("b", b.toString)
     case other =>
       throw new RuntimeException(
         s"FileStorage: unsupported value type ${other.getClass.getName} (value: $other)"
       )
   }
 
-  private def parseRaw(tag: String, raw: String): Any = tag match {
-    case "v" => decodeElems(raw)
-    case "s" => raw
-    case "I" => BigInt(raw)
-    case "D" => BigDecimal.exact(raw)
+  private def parseValue(tag: String, raw: String): Any = tag match {
+    case "s" => decodeStr(raw)
     case "l" => raw.toLong
     case "i" => raw.toInt
     case "d" => raw.toDouble
     case "b" => raw.toBoolean
     case other =>
       throw new RuntimeException(s"FileStorage: unknown value tag '$other'")
-  }
-
-  private def encodeElems(vs: Vector[?]): String =
-    vs.iterator.map { v =>
-      val (tag, raw) = tagAndRaw(v)
-      s"$tag${raw.length}:$raw"
-    }.mkString
-
-  private def decodeElems(s: String): Vector[Any] = {
-    val out = Vector.newBuilder[Any]
-    var i = 0
-    while i < s.length do {
-      val colon = s.indexOf(':', i + 1)
-      if colon < 0 then throw new RuntimeException(s"FileStorage: malformed vector value: $s")
-      val tag = s.substring(i, i + 1)
-      val end = colon + 1 + s.substring(i + 1, colon).toInt
-      out += parseRaw(tag, s.substring(colon + 1, end))
-      i = end
-    }
-    out.result()
   }
 
   private def encodeStr(s: String): String =

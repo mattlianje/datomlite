@@ -43,7 +43,7 @@ object Time {
           (oh * 60L + om) * 60_000L * (if (o.charAt(0) == '+') 1 else -1)
       }
 
-      val days = Date.civilToDays(y.toInt, month, day)
+      val days = civilToDays(y.toInt, month, day)
       val tod = (hour * 3600L + minute * 60L + second) * 1000L + milli
       fromEpochMillis(days * 86_400_000L + tod - offsetMs)
 
@@ -53,18 +53,22 @@ object Time {
   private def fail(s: String, msg: String): Nothing =
     throw new IllegalArgumentException(s"invalid ISO-8601 timestamp '$s': $msg")
 
+  /** Days from 1970-01-01 for a proleptic-Gregorian (year, month, day)
+    */
+  private def civilToDays(year: Int, month: Int, day: Int): Long = {
+    val y = if (month <= 2) year - 1 else year
+    val era = (if (y >= 0) y else y - 399) / 400
+    val yoe = y - era * 400
+    val mp = if (month > 2) month - 3 else month + 9
+    val doy = (153L * mp + 2) / 5 + day - 1
+    val doe = yoe * 365L + yoe / 4 - yoe / 100 + doy
+    era * 146097L + doe - 719468L
+  }
+
   given Ordering[Time] = Ordering.Long
 
   extension (t: Time) {
     def epochMillis: Long = t
-
-    /** `"2026-10-13T09:30:00.000Z"`, in UTC */
-    def iso: String = {
-      val ms = Math.floorMod(t, 86_400_000L)
-      val (h, m, s) = (ms / 3_600_000, ms / 60_000 % 60, ms / 1000 % 60)
-      f"${Date.at(t).iso}T$h%02d:$m%02d:$s%02d.${ms % 1000}%03dZ"
-    }
-
     infix def <(o: Time): Boolean = t < o
     infix def <=(o: Time): Boolean = t <= o
     infix def >(o: Time): Boolean = t > o

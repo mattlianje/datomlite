@@ -101,7 +101,7 @@ private[datomlite] def freshRow[A](using e: Entity[A]): Row[A] =
   *
   * {{{
   *    db.query[Employee, Order] { (e, o) =>
-  *      find(e.name) where (not(e.email === o.buyer)) // employees with no orders
+  *      find(e.name) where (not(e.email === o.buyer))   // employees with no orders
   *    }
   * }}}
   *
