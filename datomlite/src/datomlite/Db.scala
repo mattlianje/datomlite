@@ -2,27 +2,34 @@ package datomlite
 
 object Db {
 
-  /** Fresh in-memory DB. `Db()` is empty; `Db(matt, alice, dept)` seeds the initial state in one
-    * call (mixed entity types are fine).
-    */
-  def apply(values: Datum*): Db = apply(Storage.none, values*)
+  /** The empty database */
+  val empty: Db = new DbImpl.Snap(DbImpl.State.empty)
 
-  /** Persistent DB backed by `storage`.
-    *
-    * On boot, replays whatever the storage holds to recover prior state. Each subsequent `transact`
-    * appends its new datoms via `storage.append` before returning.
-    *
-    * Seed `values` are asserted after load; structurally identical seeds dedupe under `.key` and
-    * are no-ops, so re-running `Db(file, matt)` is safe.
+  /** A database holding `values`. `Db()` is empty; `Db(matt, alice, dept)` seeds it in one tx
+    * (mixed entity types are fine)
     */
-  def apply(storage: Storage, values: Datum*): Db = {
-    val db = new DbImpl.Live(storage)
-    if values.nonEmpty then db.add(values*)
-    db
-  }
+  def apply(values: Datum*): Db = if values.isEmpty then empty else empty.add(values*)
+
+  /** Replay whatever `storage` holds into a `Db`. Nothing is written back... for that, open a
+    * `Conn(storage)`
+    */
+  def load(storage: Storage): Db = new DbImpl.Snap(DbImpl.State.rebuild(storage.load()))
 }
 
-trait Db {
+/** An immutable database
+  *
+  * Every write returns a new `Db` and leaves this one as it was, so a `Db` is a snapshot, a
+  * speculative branch and a time-travel view all at once. Share it freely across threads
+  *
+  * {{{
+  *   val db  = Db(matt, alice)
+  *   val db2 = db.upsert(matt.copy(name = "Matthieu"))
+  *   db.where[Person].run   // still Matt
+  * }}}
+  *
+  * To share one changing database between threads, or to react to commits, hold it in a `Conn`
+  */
+trait Db extends Writes[Db] {
 
   /** Row stream / single-entity entry point.
     *
@@ -49,43 +56,12 @@ trait Db {
     *
     * Returns `None` if the eid doesn't exist or doesn't belong to A
     *
-    * The pull context is snapped at call time, so reads inside the closure see one consistent
-    * world. Returns a builder so callers can write `db.pullByEid[A](eid)(f)` and let `R` infer from
-    * `f`
+    * Returns a builder so callers can write `db.pullByEid[A](eid)(f)` and let `R` infer from `f`
     */
   def pullByEid[A](eid: Long)(using e: Entity[A]): PullByEid[A] =
     new PullByEid[A](this, eid, e)
 
-  def transact(tx: Tx): TxReport
-
-  /** Sugar for `transact(Tx.add(values*))`...
-    *
-    * Mixed entity types are fine: every arg is converted to a `Datum` independently via its
-    * in-scope `Entity`
-    */
-  def add(values: Datum*): TxReport = transact(Tx.add(values*))
-
-  /** Sugar for `transact(Tx.retract(values*))`...
-    *
-    * Each value is matched by full equality; if you only have a key, prefer
-    * `retractWhere[A](_.field == key)`
-    */
-  def retract(values: Datum*): TxReport = transact(Tx.retract(values*))
-
-  /** Sugar for `transact(Tx.upsert(values*))`...
-    *
-    * On a `.key` collision the prior datoms are retracted and the new value re-asserted under the
-    * same eid, so refs survive the swap. Without `.key` on the entity, behaves like `add`
-    */
-  def upsert(values: Datum*): TxReport = transact(Tx.upsert(values*))
-
-  /** Predicate-based retract
-    *
-    * Finds all matches and retracts them in one tx... the read and the write are atomic. Equality
-    * and range predicates take the AVET index
-    */
-  inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): TxReport =
-    ${ QMacro.retractWhereImpl[A]('this, 'pred, 'e) }
+  private[datomlite] def result(rep: TxReport): Db = rep.dbAfter
 
   /** Short-circuit existence check.. AVET-eligible predicates probe the index.
     */
@@ -105,32 +81,6 @@ trait Db {
     */
   def count[A](using e: Entity[A]): Long = where[A](using e).count
 
-  /** Multi-op atomic block...
-    *
-    * Mix `add`, `retract`, and `upsert` calls inside one closure; they all land under a single tx
-    * id and either all commit or none do (a `UniqueViolation` aborts the whole block)
-    *
-    * Steps run in declared order against the state-so-far, so retract-then-add of the same key is
-    * safe. The block runs inside the commit so reads through `b.db` can't go stale. Don't transact
-    * on the outer db from in here
-    */
-  def tx(build: TxBuilder => Unit): TxReport =
-    transact(Tx.Fn { s =>
-      val b = new TxBuilder(s)
-      build(b)
-      Tx.Batch(b.steps)
-    })
-
-  /** Predicate-based upsert...
-    *
-    * Runs `f` on every match and upserts the results in one tx. The read happens inside the commit
-    * so concurrent `upsertWhere(...)(bump)` calls never lose an update. Equality and range
-    * predicates take the AVET index. The upsert goes by `.key` so `f` should leave the key alone...
-    * changing it inserts a new row
-    */
-  inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): TxReport =
-    ${ QMacro.upsertWhereImpl[A]('this, 'pred, 'f, 'e) }
-
   /** Set diff between this Db's live state and `other`'s.
     *
     * `added` are datoms present in `other` but not here.. `retracted` are datoms here but not in
@@ -138,8 +88,8 @@ trait Db {
     *
     * Each result Datom carries the tx/time of the assert that produced it on its source side...
     * retractions flip `op` to `Op.Retract`. Computed against the live `(eid, attr, value)`
-    * triples... so it works for snapshots, `withTx` branches, and `asOf` views from the same
-    * lineage
+    * triples... so it works for any two dbs from the same lineage: before and after a write, two
+    * branches, or `asOf` views
     */
   def diff(other: Db): DbDiff = {
     val a = this.internal.liveDatoms
@@ -151,36 +101,12 @@ trait Db {
     DbDiff(added, retracted)
   }
 
-  /** Speculative apply: returns a new Db with `tx` applied; the live Db is untouched. */
-  def withTx(tx: Tx): Db
-  def snapshot: Db
+  /** The db as it stood right after `tx` */
   def asOf(tx: TxId): Db
   @scala.annotation.targetName("asOfTime")
   def asOf(at: Time): Db
   @scala.annotation.targetName("asOfIso")
   def asOf(at: String): Db = asOf(Time.parse(at))
-
-  /** Call `f` after every commit, in tx order
-    *
-    * Runs on the committing thread once the commit is visible and never under the write lock... so
-    * `f` can read or even transact. If `f` throws the error goes to the default reporter and the tx
-    * and other listeners carry on
-    */
-  def listen(f: TxReport => Unit): Subscription
-
-  /** A live query. Calls `f` with `q`'s result now... then again whenever it changes
-    *
-    * {{{
-    *   db.watch(_.where[Order](_.status == Status.Open).count)(n => badge.set(n))
-    * }}}
-    *
-    * `q` only re-runs after commits that write an entity class it read. So read through its
-    * argument. Closing over the outer `db` hides what it reads and the watch re-runs on every
-    * commit. End the query with `.run`, `.count` etc since a lazy `Query` never compares equal
-    *
-    * Callbacks run like `listen`'s
-    */
-  def watch[T](q: Db => T)(f: T => Unit)(using Eager[T]): Subscription
 
   /** Full append-only log of every assert and retract ever transacted. Datoms come back in
     * insertion order; the live state is the merge of asserts minus retracts...
@@ -208,6 +134,8 @@ trait Db {
   /** Macro target hatch
     */
   def internal: DbInternal
+
+  private[datomlite] def state: DbImpl.State
 }
 
 /** Result of `db.diff(other)`..facts that the right-hand side has and the left doesn't (`added`)

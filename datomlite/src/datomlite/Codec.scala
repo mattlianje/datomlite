@@ -113,8 +113,8 @@ object Codec {
 
   /** Codec for a case class, sealed trait or enum
     *
-    * Case classes store as `Vector(name1, value1, name2, value2, ...)` and read back by field
-    * name. Plain enums store as the bare case name. Other sums store as `Vector(caseName, payload)`
+    * Case classes store as `Vector(name1, value1, name2, value2, ...)` and read back by field name.
+    * Plain enums store as the bare case name. Other sums store as `Vector(caseName, payload)`
     */
   inline def derived[T](using m: Mirror.Of[T]): Codec[T] =
     inline m match {

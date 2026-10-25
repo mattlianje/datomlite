@@ -344,42 +344,6 @@ object QMacro {
       case None      => '{ $db.where[A](using $e).where($pred) }
     }
 
-  /** Compile `db.retractWhere[A](pred)` into a transact of all matches
-    *
-    * The match runs as a tx fn against the state the commit applies to. So a row written between
-    * finding and retracting can't slip through. Goes via `whereImpl` so AVET-eligible predicates
-    * skip the scan
-    */
-  def retractWhereImpl[A: Type](
-      db: Expr[Db],
-      pred: Expr[A => Boolean],
-      e: Expr[Entity[A]]
-  )(using q: Quotes): Expr[TxReport] =
-    '{
-      $db.transact(Tx.Fn { (s: Db) =>
-        val matches = ${ whereImpl[A]('s, pred, e) }.run
-        Tx.Retract(matches.map(a => Datum(a, $e.asInstanceOf[Entity[Any]])))
-      })
-    }
-
-  /** Compile `db.upsertWhere[A](pred)(f)` into an atomic find-then-upsert
-    *
-    * Finds inside the commit like `retractWhereImpl` so concurrent read-modify-writes queue up
-    * instead of losing updates. Runs `f` on each match and upserts the results as one step
-    */
-  def upsertWhereImpl[A: Type](
-      db: Expr[Db],
-      pred: Expr[A => Boolean],
-      f: Expr[A => A],
-      e: Expr[Entity[A]]
-  )(using q: Quotes): Expr[TxReport] =
-    '{
-      $db.transact(Tx.Fn { (s: Db) =>
-        val matches = ${ whereImpl[A]('s, pred, e) }.run.map($f)
-        Tx.Upsert(matches.map(a => Datum(a, $e.asInstanceOf[Entity[Any]])))
-      })
-    }
-
   /** Compile `db.exists[A](pred)` into a short-circuit existence check
     *
     * Routes through `whereImpl` so AVET-eligible predicates probe the index instead of scanning

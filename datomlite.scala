@@ -1,7 +1,5 @@
 import datomlite._
-
-/* An empty db */
-val db = Db()
+import java.nio.file.Path
 
 /* Case classes are the schema */
 case class Fighter(
@@ -21,8 +19,8 @@ val li = Fighter("Jet Li", "Wushu", "China")
 val gegard = Fighter("Gegard Mousasi", "Mixed", "Netherlands")
 val rory = Fighter("Rory MacDonald", "Pankration", "Canada")
 
-/* Threadsafe, all-or-nothing transactions */
-val rep = db.add(
+/* A db is a value. Writes are all-or-nothing and hand back a new one */
+val db = Db(
   li,
   gegard,
   rory,
@@ -60,8 +58,10 @@ def wins(f: Fighter)(using db: Db) =
 wins(gegard) // 1
 
 /* Speculative branches and time travel */
-val whatIfDb = db.withTx(Tx.add(Bout("B5", li, gegard, li)))
+val whatIfDb = db.add(Bout("B5", li, gegard, li))
 val dbAtTime = db.asOf("2026-01-01")
 
-/* Bring your own storage */
-val persistent = Db(FileStorage(Path.of("db.dlite")))
+/* One shared, changing db: listen, watch, bring your own storage */
+val conn = Conn(FileStorage(Path.of("db.dlite")))
+conn.watch(_.count[Bout])(n => println(s"$n bouts"))
+conn.add(Bout("B5", li, gegard, li))

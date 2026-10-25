@@ -5,9 +5,8 @@ import scala.quoted.*
 
 /** Read-only view of a pinned db state
   *
-  * The bare minimum a `Pull[A]` needs to resolve attributes lazily. `Live` and `Snap` both
-  * implement this against a single `State` snapped at pull time so lookups inside one closure are
-  * consistent
+  * The bare minimum a `Pull[A]` needs to resolve attributes lazily. Implemented against the db's
+  * single `State`, so lookups inside one closure are consistent
   */
 trait PullCtx {
   def scalarOf(eid: Long, attr: String): Any

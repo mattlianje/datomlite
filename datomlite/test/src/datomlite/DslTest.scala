@@ -15,13 +15,11 @@ class DslTest extends munit.FunSuite:
     given Entity[Order] = Entity.derived
 
   private def seeded: Db =
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), 90_000L),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), 150_000L)
-    )
-    db.add(
+    ).add(
       Order("m@x.io", "book", 20L),
       Order("a@x.io", "lamp", 90L),
       Order("b@x.io", "chair", 60L)
@@ -188,8 +186,7 @@ class DslTest extends munit.FunSuite:
     assertEquals(rows.head, (90_000L, 150_000L))
 
   test("agg: count vs countDistinct"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Order("m@x.io", "book", 20L),
       Order("m@x.io", "pen", 5L),
       Order("a@x.io", "book", 20L)
@@ -323,26 +320,22 @@ class DslTest extends munit.FunSuite:
     assertEquals(rows, Set("Alice", "Bob"))
 
   test("not: anti-join across entities (employees with no orders)"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), 90_000L),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), 150_000L)
-    )
-    db.add(Order("m@x.io", "book", 20L))
+    ).add(Order("m@x.io", "book", 20L))
     val rows = db.query[Employee, Order] { (e, o) =>
       find(e.name) where not(e.email === o.buyer)
     }.run.toSet
     assertEquals(rows, Set("Alice", "Bob"))
 
   test("not: combine with positive constraint"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), 90_000L),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), 150_000L)
-    )
-    db.add(Order("m@x.io", "book", 20L), Order("a@x.io", "lamp", 90L))
+    ).add(Order("m@x.io", "book", 20L), Order("a@x.io", "lamp", 90L))
     val rows = db.query[Employee, Department, Order] { (e, d, o) =>
       find(e.name) where (
         e.dept === d && d.name === "Engineering" && not(e.email === o.buyer)
@@ -351,9 +344,8 @@ class DslTest extends munit.FunSuite:
     assertEquals(rows, Set.empty[String])
 
   test("not: department with no employees"):
-    val db = Db()
-    db.add(Department("ENG", "Engineering"), Department("SAL", "Sales"))
-    db.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L))
+    val db = Db(Department("ENG", "Engineering"), Department("SAL", "Sales"))
+      .add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L))
     val rows = db.query[Department, Employee] { (d, e) =>
       find(d.name) where not(e.dept === d)
     }.run.toSet
@@ -388,8 +380,7 @@ class DslTest extends munit.FunSuite:
     assert(ex.getMessage.contains("nested not"))
 
   private def seededWindow: Db =
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), 90_000L),
       Employee("c@x.io", "Carol", Department("ENG", "Engineering"), 90_000L),

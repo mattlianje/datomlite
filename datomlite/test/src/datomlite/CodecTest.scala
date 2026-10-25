@@ -59,10 +59,7 @@ class CodecTest extends munit.FunSuite:
     Set.empty
   )
 
-  private def db(): Db =
-    val d = Db()
-    d.add(alice, bob)
-    d
+  private def db(): Db = Db(alice, bob)
 
   test("codec: every value type round-trips through the db"):
     assertEquals(db().where[Account].run.toSet, Set(alice, bob))
@@ -139,6 +136,4 @@ class CodecTest extends munit.FunSuite:
     )
 
   test("codec: retract by value matches the encoded row"):
-    val d = db()
-    d.retract(bob)
-    assertEquals(d.where[Account].run, Vector(alice))
+    assertEquals(db().retract(bob).where[Account].run, Vector(alice))

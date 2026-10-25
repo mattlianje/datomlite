@@ -17,8 +17,7 @@ class RuleTest extends munit.FunSuite:
     val b = Node("b", Set.empty)
     val a = Node("a", Set(c))
     val root = Node("root", Set(a, b))
-    val db = Db()
-    db.add(root)
+    val db = Db(root)
     db
 
   test("reaches: forward closure with src bound, dst free"):
@@ -129,16 +128,16 @@ class RuleTest extends munit.FunSuite:
     given Entity[Off] = Entity.derived[Off].key(_.name)
 
   private def flatOfficeDb: Db =
-    val db = Db()
-    db.add(Off("Napoleon", None))
-    db.add(Off("Davout", Some("Napoleon")))
-    db.add(Off("Ney", Some("Napoleon")))
-    db.add(Off("Murat", Some("Napoleon")))
-    db.add(Off("Friant", Some("Davout")))
-    db.add(Off("Gudin", Some("Davout")))
-    db.add(Off("Marchand", Some("Ney")))
-    db.add(Off("Lasalle", Some("Murat")))
-    db
+    Db(
+      Off("Napoleon", None),
+      Off("Davout", Some("Napoleon")),
+      Off("Ney", Some("Napoleon")),
+      Off("Murat", Some("Napoleon")),
+      Off("Friant", Some("Davout")),
+      Off("Gudin", Some("Davout")),
+      Off("Marchand", Some("Ney")),
+      Off("Lasalle", Some("Murat"))
+    )
 
   private def ancestorRule: Rule[Off, Off] =
     Rule.recursive[Off, Off] { self =>
@@ -237,13 +236,12 @@ class RuleTest extends munit.FunSuite:
     given Entity[User] = Entity.derived[User].key(_.email)
 
   test("define: multi-body OR-style rule with no self reference"):
-    val db = Db()
-    db.add(User("alice@x.io", true), User("bob@x.io", true), User("carol@x.io", false))
-    db.add(
-      Doc("intro", "alice@x.io", true),
-      Doc("plan", "bob@x.io", false),
-      Doc("memo", "alice@x.io", false)
-    )
+    val db = Db(User("alice@x.io", true), User("bob@x.io", true), User("carol@x.io", false))
+      .add(
+        Doc("intro", "alice@x.io", true),
+        Doc("plan", "bob@x.io", false),
+        Doc("memo", "alice@x.io", false)
+      )
 
     val canRead: Rule[User, Doc] =
       Rule[User, Doc](
@@ -275,9 +273,8 @@ class RuleTest extends munit.FunSuite:
     given Entity[Road] = Entity.derived[Road].key(r => (r.from.code, r.to.code))
 
   test("recursive: reachability over an edge entity"):
-    val db = Db()
     val a = Place("A"); val b = Place("B"); val c = Place("C"); val d = Place("D")
-    db.add(Road(a, b), Road(b, c), Road(c, d), Road(a, d))
+    val db = Db(Road(a, b), Road(b, c), Road(c, d), Road(a, d))
 
     val reachable: Rule[Place, Place] = Rule.recursive[Place, Place] { self =>
       Seq(
@@ -306,9 +303,8 @@ class RuleTest extends munit.FunSuite:
     assertEquals(fromD, Set.empty[String])
 
   test("recursive: terminates on cycles in the data"):
-    val db = Db()
     val a = Place("A"); val b = Place("B"); val c = Place("C")
-    db.add(Road(a, b), Road(b, c), Road(c, a)) // cycle A -> B -> C -> A
+    val db = Db(Road(a, b), Road(b, c), Road(c, a)) // cycle A -> B -> C -> A
 
     val reachable: Rule[Place, Place] = Rule.recursive[Place, Place] { self =>
       Seq(

@@ -17,87 +17,92 @@ class WatchTest extends munit.FunSuite:
   private val eng = Department("ENG", "Engineering")
 
   test("fires once up front with the current result"):
-    val db = Db(Employee("m@x.io", eng, 100L))
+    val conn = Conn(Db(Employee("m@x.io", eng, 100L)))
     var seen = Vector.empty[Long]
-    db.watch(_.count[Employee])(seen :+= _)
+    conn.watch(_.count[Employee])(seen :+= _)
     assertEquals(seen, Vector(1L))
 
   test("fires on a commit that changes the result"):
-    val db = Db()
+    val conn = Conn()
     var seen = Vector.empty[Long]
-    db.watch(_.count[Employee](_.salary > 50L))(seen :+= _)
-    db.add(Employee("m@x.io", eng, 100L))
-    db.add(Employee("a@x.io", eng, 10L))
-    db.add(Employee("b@x.io", eng, 70L))
+    conn.watch(_.count[Employee](_.salary > 50L))(seen :+= _)
+    conn.add(Employee("m@x.io", eng, 100L))
+    conn.add(Employee("a@x.io", eng, 10L))
+    conn.add(Employee("b@x.io", eng, 70L))
     assertEquals(seen, Vector(0L, 1L, 2L))
 
   test("skips re-running for commits to classes the query never read"):
-    val db = Db()
+    val conn = Conn()
     var runs = 0
-    db.watch { s =>
+    conn.watch { s =>
       runs += 1; s.where[Employee].run.size
     }(_ => ())
-    db.add(Note("n1", "hello"))
-    db.add(Note("n2", "world"))
+    conn.add(Note("n1", "hello"))
+    conn.add(Note("n2", "world"))
     assertEquals(runs, 1)
-    db.add(Employee("m@x.io", eng, 100L))
+    conn.add(Employee("m@x.io", eng, 100L))
     assertEquals(runs, 2)
 
   test("doesn't fire when a relevant commit leaves the result unchanged"):
-    val db = Db(Employee("m@x.io", eng, 100L))
+    val conn = Conn(Db(Employee("m@x.io", eng, 100L)))
     var seen = Vector.empty[Vector[String]]
-    db.watch(_.where[Employee](_.salary > 50L).run.map(_.email))(seen :+= _)
-    db.add(Employee("a@x.io", eng, 10L))
+    conn.watch(_.where[Employee](_.salary > 50L).run.map(_.email))(seen :+= _)
+    conn.add(Employee("a@x.io", eng, 10L))
     assertEquals(seen, Vector(Vector("m@x.io")))
 
   test("reading an entity counts its ref targets as read"):
-    val db = Db(Employee("m@x.io", eng, 100L))
+    val conn = Conn(Db(Employee("m@x.io", eng, 100L)))
     var seen = Vector.empty[Set[String]]
-    db.watch(_.where[Employee].run.map(_.dept.name).toSet)(seen :+= _)
-    db.upsert(Department("ENG", "Eng & Research"))
+    conn.watch(_.where[Employee].run.map(_.dept.name).toSet)(seen :+= _)
+    conn.upsert(Department("ENG", "Eng & Research"))
     assertEquals(seen, Vector(Set("Engineering"), Set("Eng & Research")))
 
   test("typed queries and pulls are tracked"):
-    val db = Db(Employee("m@x.io", eng, 100L))
+    val conn = Conn(Db(Employee("m@x.io", eng, 100L)))
     var runs = 0
     var seen = Vector.empty[Set[String]]
-    db.watch { s =>
+    conn.watch { s =>
       runs += 1
       s.query[Employee](e => find(e.email) where (e.salary >= 100L)).run.toSet
     }(seen :+= _)
-    db.add(Note("n1", "unrelated"))
-    db.add(Employee("a@x.io", eng, 200L))
+    conn.add(Note("n1", "unrelated"))
+    conn.add(Employee("a@x.io", eng, 200L))
     assertEquals(runs, 2)
     assertEquals(seen, Vector(Set("m@x.io"), Set("m@x.io", "a@x.io")))
 
   test("cancel stops further callbacks"):
-    val db = Db()
+    val conn = Conn()
     var seen = Vector.empty[Long]
-    val sub = db.watch(_.count[Employee])(seen :+= _)
-    db.add(Employee("m@x.io", eng, 100L))
+    val sub = conn.watch(_.count[Employee])(seen :+= _)
+    conn.add(Employee("m@x.io", eng, 100L))
     sub.cancel()
-    db.add(Employee("a@x.io", eng, 100L))
+    conn.add(Employee("a@x.io", eng, 100L))
     assertEquals(seen, Vector(0L, 1L))
 
   test("a throwing query doesn't break the db or other watches"):
-    val db = Db()
+    val conn = Conn()
     var seen = Vector.empty[Long]
-    db.watch(s =>
+    conn.watch(s =>
       if s.count[Employee] == 1L then sys.error("query boom (expected in test output)") else 0
     )(_ => ())
-    db.watch(_.count[Employee])(seen :+= _)
-    db.add(Employee("m@x.io", eng, 100L))
-    db.add(Employee("a@x.io", eng, 100L))
+    conn.watch(_.count[Employee])(seen :+= _)
+    conn.add(Employee("m@x.io", eng, 100L))
+    conn.add(Employee("a@x.io", eng, 100L))
     assertEquals(seen, Vector(0L, 1L, 2L))
 
-  test("a watch on a snapshot runs once"):
-    val db = Db(Employee("m@x.io", eng, 100L))
+  test("watch reads the conn's db as of each commit"):
+    val conn = Conn()
     var seen = Vector.empty[Long]
-    val sub = db.snapshot.watch(_.count[Employee])(seen :+= _)
-    db.add(Employee("a@x.io", eng, 100L))
-    assertEquals(seen, Vector(1L))
-    assert(!sub.isActive)
+    conn.watch(_.count[Employee])(seen :+= _)
+    val before = conn.db
+    conn.add(Employee("m@x.io", eng, 100L))
+    assertEquals(before.count[Employee], 0L)
+    assertEquals(seen, Vector(0L, 1L))
 
   test("lazy results are rejected at compile time"):
-    val errs = compileErrors("Db().watch(_.where[Note])(_ => ())")
+    val errs = compileErrors("Conn().watch(_.where[Note])(_ => ())")
     assert(errs.contains("materialized"), errs)
+
+  test("a plain db has nothing to watch"):
+    val errs = compileErrors("Db().watch(_.count[Note])(_ => ())")
+    assert(errs.contains("watch"), errs)

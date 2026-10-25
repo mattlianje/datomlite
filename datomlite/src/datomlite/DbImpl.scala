@@ -20,13 +20,16 @@ private[datomlite] object DbImpl {
       avet: Map[String, TreeMap[Any, Set[Eid]]],
       log: Vector[Datom]
   ) {
-    def commit(tx: Tx, time: Time): (State, TxReport) = {
+
+    /** Apply `tx` as the next transaction. `before` is the `Db` over this state, so the report can
+      * hand back both sides
+      */
+    def commit(tx: Tx, time: Time, before: Db): TxReport = {
       val txId = TxId(nextTxId)
       val acc = applyTx(tx, txId, time)
-      (
-        acc.state.copy(nextTxId = nextTxId + 1),
-        TxReport(txId, time, acc.adds, acc.retracts, acc.eids, acc.state.log.drop(log.size))
-      )
+      val next = acc.state.copy(nextTxId = nextTxId + 1)
+      val datoms = next.log.drop(log.size)
+      TxReport(txId, time, acc.adds, acc.retracts, acc.eids, datoms, before, new Snap(next))
     }
 
     /** Single-step apply...
@@ -167,7 +170,7 @@ private[datomlite] object DbImpl {
         case Some(flat) =>
           val attrsAsSets = State.collapseToSets(flat)
           findExisting(entity, attrsAsSets) match {
-            case None      => this
+            case None => this
             case Some(eid) =>
               val datoms = flat.map((a, vv) => Datom(eid, a, vv, tx, time, Op.Retract))
               copy(
@@ -770,112 +773,13 @@ private[datomlite] object DbImpl {
       () => eidsInRange(state, e, field, lo, hi, prefix).map(reconstructEntity(state, _, e))
     )
 
-  /** The writable db
-    *
-    * Readers never lock and just read the current `State`. Writers take `writeLock` one at a time
-    * so a commit (tx fns included) sees every commit before it. New datoms hit `storage` before the
-    * state is published... so a failed append loses nothing anyone saw
-    */
-  final class Live(storage: Storage) extends Db with DbInternal {
-    @volatile private var current: State = State.rebuild(storage.load())
-    private val hub = new Hub
-    private val writeLock = new Object
-
-    /** Set during a commit so a tx fn or block that transacts on this db fails fast */
-    private var committing = false
-
-    private def snap: Snap = new Snap(current)
-
-    def internal: DbInternal = this
-
-    /* Queries keep this db as their origin. Everything else reads a fresh snapshot */
-    def all[A](using e: Entity[A]): Query[A] = {
-      val s = current
-      Query(this, () => reconstructAll(s, e))
-    }
-
-    def byEqByName[A](attr: String, value: Any)(using e: Entity[A]): Query[A] =
-      byEqQuery(this, current, e, attr, value)
-
-    def byRangeByName[A](field: String, lo: Option[Any], hi: Option[Any], prefix: Option[String])(
-        using e: Entity[A]
-    ): Query[A] =
-      byRangeQuery(this, current, e, field, lo, hi, prefix)
-
-    def eidsByEq(attr: String, value: Any): Set[Long] = snap.eidsByEq(attr, value)
-
-    def eidsByEqByName[A](attr: String, value: Any)(using e: Entity[A]): Set[Long] =
-      snap.eidsByEqByName[A](attr, value)
-
-    def allEids[A](using e: Entity[A]): Set[Long] = snap.allEids[A]
-
-    def eidOf[A](a: A)(using e: Entity[A]): Option[Long] = snap.eidOf(a)
-
-    def pullCtx: PullCtx = snap.pullCtx
-
-    def pullManyEids[A, R](eids: Iterable[Long])(f: Pull[A] => R)(using e: Entity[A]): Vector[R] =
-      snap.pullManyEids(eids)(f)
-
-    def evalClauses(clauses: Vector[Q.Clause]): Iterator[Map[String, Any]] =
-      snap.evalClauses(clauses)
-
-    def liveDatoms: Vector[Datom] = snap.liveDatoms
-
-    def byEid[A](eid: Long)(using e: Entity[A]): Option[A] = snap.byEid[A](eid)
-
-    def transact(tx: Tx): TxReport = {
-      val report = writeLock.synchronized {
-        if committing then
-          throw new IllegalStateException(
-            "transact called from inside a transaction on the same db; return a Tx from the " +
-              "tx fn (or add a step to the tx block) instead"
-          )
-        committing = true
-        try {
-          val (next, rep) = current.commit(tx, Time.now())
-          if rep.datoms.nonEmpty then storage.append(rep.datoms)
-          current = next
-          hub.committed(rep, next)
-          rep
-        } finally committing = false
-      }
-      hub.drain()
-      report
-    }
-
-    def withTx(tx: Tx): Db = snap.withTx(tx)
-
-    def snapshot: Db = snap
-
-    def asOf(tx: TxId): Db = snap.asOf(tx)
-
-    @scala.annotation.targetName("asOfTime")
-    def asOf(at: Time): Db = snap.asOf(at)
-
-    def listen(f: TxReport => Unit): Subscription = hub.listen(f)
-
-    def watch[T](q: Db => T)(f: T => Unit)(using Eager[T]): Subscription = {
-      /* Under the lock so no commit lands between the first run's state and registering */
-      val sub = writeLock.synchronized(hub.watch(q, f, current))
-      hub.drain()
-      sub
-    }
-
-    def log: Vector[Datom] = current.log
-
-    def historyOf[A](a: A)(using e: Entity[A]): Vector[Datom] = snap.historyOf(a)
-
-    def history(eid: Long): Vector[Datom] = snap.history(eid)
-
-    def pretty: String = snap.pretty
-    def prettyLog(color: Boolean = false): String = snap.prettyLog(color)
-  }
-
-  /** Read-only view of one `State`
+  /** The `Db` value: one `State` and the reads over it
     *
     * `deps` hears about every read. That's how `watch` learns what a query depends on
     */
-  final class Snap(state: State, deps: Deps = Deps.off) extends Db with DbInternal {
+  final class Snap(private[datomlite] val state: State, deps: Deps = Deps.off)
+      extends Db
+      with DbInternal {
     def internal: DbInternal = this
 
     def all[A](using e: Entity[A]): Query[A] = {
@@ -935,16 +839,10 @@ private[datomlite] object DbImpl {
       eidLookup(state, eid, e)
     }
 
-    def transact(tx: Tx): TxReport =
-      throw UnsupportedOperationException("snapshot is read-only; transact on a live Db")
-
-    def withTx(tx: Tx): Db = {
+    def transact(tx: Tx): TxReport = {
       deps.everything()
-      val (next, _) = state.commit(tx, Time.now())
-      new Snap(next)
+      state.commit(tx, Time.now(), if deps eq Deps.off then this else new Snap(state))
     }
-
-    def snapshot: Db = this
 
     def asOf(tx: TxId): Db = {
       deps.everything()
@@ -957,15 +855,6 @@ private[datomlite] object DbImpl {
       deps.everything()
       val slice = state.log.takeWhile(_.time <= at)
       new Snap(State.rebuild(slice))
-    }
-
-    /** Nothing commits to a snapshot so there's nothing to hear */
-    def listen(f: TxReport => Unit): Subscription = Subscription.inactive
-
-    /** Runs `q` once. A snapshot never changes */
-    def watch[T](q: Db => T)(f: T => Unit)(using Eager[T]): Subscription = {
-      f(q(this))
-      Subscription.inactive
     }
 
     def log: Vector[Datom] = {
@@ -992,6 +881,9 @@ private[datomlite] object DbImpl {
       deps.everything()
       prettyLogOf(state.log, color)
     }
+
+    override def toString: String =
+      s"Db(${state.eavt.size} entities, ${state.log.size} datoms)"
   }
 
   /** Pinned read-only view of one `State`.

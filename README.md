@@ -19,6 +19,8 @@
 - Typed queries, compile-time checked
 - Datalog that feels like plain Scala (no EDN, no DDL)
      - Joins, refs, aggregations, window functions, recursive rules
+- The `Db` is a plain immutable value: every write hands back a new one
+- A `Conn` when you want one shared, changing db (threads, listeners, live queries)
 - Easy time-travel and speculative transactions
 - Named-tuple query results
 - Implement `Storage` and bring your own backend
@@ -48,6 +50,7 @@ Try it in your REPL:
 - [Optional fields](#optional-fields)
 - [Value types and codecs](#value-types-and-codecs)
 - [Tx blocks](#tx-blocks-batch-multiple-ops)
+- [Conn](#conn-a-db-that-changes)
 - [Listen](#listen-for-db-changes)
 - [Watch](#watch-a-query)
 - [Predicates](#predicates-as-index-probes)
@@ -79,14 +82,11 @@ Try it in your REPL:
 ```scala
 import datomlite._
 
-/* Create an empty db */
-val db = Db()
-
 /* Just derive `Entity` on your case classes */
 case class Person(@key email: String, name: String) derives Entity
 
-/* Easy, threadsafe transactions */
-db.add(Person("m@x.io", "Matt"), Person("a@x.io", "Alice"))
+/* A db is a value. Seed it in one tx */
+val db = Db(Person("m@x.io", "Matt"), Person("a@x.io", "Alice"))
 
 /* Your db feels like a collection */
 db.where[Person].run
@@ -95,14 +95,18 @@ db.where[Person](_.email == "m@x.io").one
 db.where[Person].filter(_.name.startsWith("M")).take(5).toList
 for p <- db.where[Person] do println(p.name)
 
-db.upsert(Person("m@x.io", "Matthieu"))
+/* Writes hand back a new db, the old one is untouched */
+val db2 = db.upsert(Person("m@x.io", "Matthieu"))
 
 /* Typed Datalog: joins, projections, aggs */
-db.query[Person] { p =>                        
+db2.query[Person] { p =>
   find(p.name) where (p.email === "m@x.io")
 }.run
 
-db.retractWhere[Person](_.email == "m@x.io")
+/* One shared db that changes? Hold it in a Conn */
+val conn = Conn(db2)
+conn.retractWhere[Person](_.email == "m@x.io")
+conn.db.where[Person].run
 ```
 
 ## FAQ
@@ -127,17 +131,22 @@ No. Recursion goes through named rules, negation is top-level conjunctions only,
 - Queries are typed Scala, not vectors of triples. Field access is compile-checked by the datomlite macros.
 - Single-process, single-writer. No peer/transactor, no client API
 
+**`Db` or `Conn`?**<br>
+A `Db` is an immutable value: `db.add(...)` returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
+what-ifs and time travel. A `Conn` holds the current `Db` and swaps in a new one on each commit. Reach for it when several threads share one
+changing db, when you want `listen` / `watch`, or when commits should go to a `Storage`.
+
 **Transaction guarantees?**<br>
-- **Atomicity.** All asserts and retracts in a tx commit together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
-- **Serialized commits.** Any number of threads can call `transact`. Commits run one at a time, in order, under a short write lock.
-- **Atomic read-modify-write.** `retractWhere`, `upsertWhere`, `db.tx { ... }` and `Tx.fn` read the state inside the commit. So a concurrent `upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
-- **Snapshot reads.** Every read call (`where`, `query`, `pull`, `byEid`) dereferences the live state once at entry and operates on that immutable snapshot for its duration. Reads never take the lock and never block.
-- **Write-ahead append.** `Storage.append` runs before a commit becomes visible. If it throws, the tx aborts: no state change and no listener fires.
+- **Atomicity.** All asserts and retracts in a tx land together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
+- **Values.** A `Db` never changes, so reads on it never lock, never block, and always see one consistent state.
+- **Serialized commits.** Any number of threads can write to a `Conn`. Commits run one at a time, in order, under a short write lock.
+- **Atomic read-modify-write.** `retractWhere`, `upsertWhere`, `tx { ... }` and `Tx.fn` read the state inside the commit. So a concurrent `conn.upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
+- **Write-ahead append.** `Storage.append` runs before a commit becomes visible on the `Conn`. If it throws, the tx aborts: no state change and no listener fires.
 
 **What is the inspiration?**<br>
 Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/), [Datascript](https://github.com/tonsky/datascript), [Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is in the general orbit of Datalog flavoured triple stores, it puts particular (and to my knowledge novel) emphasis on type-safety and feeling 100% embedded into the host language. 
 
-In a sense, **datomlite** is "DB-as-a-value", but does not preoccupy itself with functional purity per se.
+**datomlite** is "DB-as-a-value": the `Db` is immutable and the one mutable thing, the `Conn`, is opt-in.
 
 ## Updates
 Suppose we add two pugilists to our database, "Jet Li" and "Masvidal". Adding them appends datoms and the live projection picks them up:
@@ -163,11 +172,11 @@ val db = Db(
 
 Unsurprisingly, we want to remove Masvidal:
 ```scala
-db.retractWhere[Fighter](_.lName == "Masvidal")
-db.where[Fighter].run
+val db2 = db.retractWhere[Fighter](_.lName == "Masvidal")
+db2.where[Fighter].run
 // Vector(Fighter("Jet", "Li", None))
 ```
-The live projection drops Masvi, but the log still has every datom.
+The new db's live projection drops Masvi, but its log still has every datom (and `db` still has him).
 
 <p align="center">
   <img src="pix/datomlite-masvi2.svg" width="550">
@@ -192,14 +201,14 @@ case class Employee(
 ```
 
 ## Operations
-Writes commit all-or-nothing and return a `TxReport`. 
-Reads capture one snapshot at entry.
+Writes are all-or-nothing and return the new `Db` (on a `Conn`, they commit and return a `TxReport`).
 
 Write:
 ```
 db.add(values*)              assert one or more rows in one tx
 db.retract(values*)          retract by full equality, misses are silent
 db.retractWhere[A](pred)     find every match and retract in one tx
+db.transact(tx)              apply a Tx value, get a TxReport back
 ```
 
 Read:
@@ -215,11 +224,11 @@ db.count[A](pred)            Long, no row materialization
 val eng = Department("ENG", "Engineering")
 
 /* Adding */
-db.add(Employee("a@x.io", "Alice", eng, 100_000L))
-db.add(
-  Employee("b@x.io", "Bob",   eng, 120_000L),
-  Employee("c@x.io", "Carol", eng, 150_000L),
-)
+val db = Db(Employee("a@x.io", "Alice", eng, 100_000L))
+  .add(
+    Employee("b@x.io", "Bob",   eng, 120_000L),
+    Employee("c@x.io", "Carol", eng, 150_000L),
+  )
 
 /* Lookups */
 db.where[Employee].run                            // Vector[Employee]
@@ -228,8 +237,9 @@ db.where[Employee](_.name.startsWith("M")).run    // Vector[Employee]
 db.where[Employee](_.salary >= 120_000L).run      // Vector[Employee]
 
 /* Retract */
-db.retractWhere[Employee](_.email == "a@x.io")
-db.retractWhere[Employee](_.email == "b@x.io")
+val fewer = db
+  .retractWhere[Employee](_.email == "a@x.io")
+  .retractWhere[Employee](_.email == "b@x.io")
 
 /* Quick checks */
 db.exists[Employee](_.email == "m@x.io")        // Boolean
@@ -248,7 +258,8 @@ db.where[Employee].head
 for e <- db.where[Employee] do println(e.name)
 ```
 
-Each `add`/`retract` returns a `TxReport` with `tx` id and wall-clock `time`. Both feed `asOf` (see [Time travel](#time-travel)).
+`db.transact(tx)` returns a `TxReport` with the `tx` id and wall-clock `time` (both feed `asOf`, see [Time travel](#time-travel)) and the
+`dbBefore` / `dbAfter` of the write.
 
 ## Keys and uniqueness
 Often, we want to enforce uniqueness of data in our datastore. This this end, **datomlite** lets you mark uniqueness keys:
@@ -270,7 +281,7 @@ case class User(
   name: String
 ) derives Entity
 
-db.add(User("a@x.io", "shared", "Alice"))
+val db = Db(User("a@x.io", "shared", "Alice"))
 db.add(User("b@x.io", "shared", "Bob"))
 // UniqueViolation: 'shared' is taken
 ```
@@ -421,25 +432,26 @@ b.upsertWhere[A](pred)(f)     reads matches, applies f, appends an upsert
 db.retractWhere / db.upsertWhere(pred)(f)   one-shot tx versions
 Tx.batch(steps*)              hold steps as a value
 Tx.fn(db => tx)               a step computed from the state-so-far
+Tx.block / Tx.retractWhere / Tx.upsertWhere   the same, as Tx values
 db.transact(tx)               apply a Tx value
 ```
 
 Steps run in order against the state-so-far, share one tx id, and commit all-or-nothing. The block runs *inside* the commit, so its reads and its writes are
-one atomic step. No other writer can slip in between. Read through `b.db` to see the state-so-far, including earlier steps in the block.
+one atomic step. On a `Conn` no other writer can slip in between. Read through `b.db` to see the state-so-far, including earlier steps in the block.
 
 ```scala
-db.tx { b =>
+val raised = db.tx { b =>
   val m = b.db.where[Employee](_.email == "m@x.io").one.get
   b.upsert(m.copy(salary = m.salary + 5_000L))
 }
 ```
 
 > [!NOTE]
-> The block may run on a writer's thread while other writers wait, so keep it short and pure. Calling `db.add` / `db.transact` on the outer db from inside
-> the block throws `IllegalStateException`. Use `b` instead.
+> On a `Conn` the block runs while other writers wait, so keep it short and pure. Calling `conn.add` / `conn.transact` from inside the block throws
+> `IllegalStateException`. Use `b` instead.
 
 ```scala
-db.tx { b =>
+val db2 = db.tx { b =>
   b.upsertWhere[Employee](_.email == "m@x.io")(_.copy(name = "Matthieu"))
   b.add(Order("m@x.io", "book", 20L))
 }
@@ -447,19 +459,19 @@ db.tx { b =>
 
 `retractWhere` / `upsertWhere` inside the block:
 ```scala
-db.tx { b =>
+val db3 = db.tx { b =>
   b.retractWhere[Order](_.buyer == "ghost@x.io")
   b.upsertWhere[Employee](_.email == "m@x.io")(_.copy(salary = 130_000L))
 }
 ```
 
-You can also postpone a transaction and run it later as below:
+A `Tx` is a value too, so you can build one now and apply it later, to any db or conn:
 ```scala
 val tx = Tx.batch(
   Tx.add(Order("m@x.io", "book", 20L)),
   Tx.add(Order("m@x.io", "pen",   5L)),
 )
-db.transact(tx)
+val rep = db.transact(tx)
 ```
 
 `Tx.fn` is the value-level form of a tx block. It computes its steps from the state-so-far when the tx commits, not when you build it:
@@ -467,45 +479,63 @@ db.transact(tx)
 case class Counter(@key name: String, n: Long) derives Entity
 
 val bump = Tx.fn(s => Tx.upsert(s.where[Counter](_.name == "hits").run.map(c => c.copy(n = c.n + 1))*))
-db.transact(Tx.batch(Tx.add(Counter("hits", 0)), bump))   // hits = 1
+val counted = db.transact(Tx.batch(Tx.add(Counter("hits", 0)), bump)).dbAfter   // hits = 1
 ```
 
-From a transaction you'll get back `TxReport`
-this carries 
+`transact` hands back a `TxReport` carrying
 ```
-tx, time, adds, retracts, addedEids, datoms
+tx, time, adds, retracts, addedEids, datoms, dbBefore, dbAfter
 ```
-`datoms` holds exactly what the commit appended to the log.
+`datoms` holds exactly what the commit appended to the log. `dbAfter` is the db it made.
 
-## Listen for db changes
-You often want to respond to changes made to your datastore, which is why datomlite has `.listen`.
+## Conn: a db that changes
+A `Db` value never changes. When you want one db that a whole app shares and writes to, hold it in a `Conn`. It has the same write verbs as `Db`,
+but they commit in place and return the `TxReport`. `conn.db` is the current value.
 
-The callback fires after each successful commit with the `TxReport` (tx id, adds, retracts, addedEids). Reads inside see the just-committed state. Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
+```
+Conn()                       in-memory, empty
+Conn(db)                     in-memory, starting from db
+Conn(storage)                replays storage, appends each commit to it
+conn.db                      the db right now, a plain value
+conn.add / upsert / tx ...   commit and return a TxReport
+conn.listen(f)               hear every commit
+conn.watch(q)(f)             live query
+```
 
 ```scala
-val sub = db.listen { rep =>
+val conn = Conn(db)
+conn.add(Order("m@x.io", "book", 20L))
+
+val now = conn.db                 // a value, later commits don't touch it
+now.where[Order].count
+```
+
+## Listen for db changes
+You often want to respond to changes made to your datastore, which is why a `Conn` has `.listen`.
+
+The callback fires after each successful commit with the `TxReport` (tx id, adds, retracts, addedEids, `dbAfter`...). Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
+
+```scala
+val sub = conn.listen { rep =>
   println(s"tx ${rep.tx.value}: +${rep.adds.size} -${rep.retracts.size}")
 }
-sub.cancel() // or Using.resource(db.listen(...)) { _ => ... }, Subscription is AutoCloseable
+sub.cancel() // or Using.resource(conn.listen(...)) { _ => ... }, Subscription is AutoCloseable
 ```
 
 - Every commit once, in tx order, even with lots of writers. You only hear commits made after you subscribe.
 - If a listener throws the tx and other listeners are fine. The error goes to `ExecutionContext.defaultReporter`.
-- A listener can write to the db. It hears that write once the current callback returns.
+- A listener can write to the conn. It hears that write once the current callback returns.
 - Callbacks run outside the lock but `transact` may wait on them... so keep them quick.
-
-> [!NOTE]  
-> Snapshots and `withTx` branches (see [Time travel](#time-travel)) are read-only. `listen` on them returns an inactive `Subscription`.
 
 ## Watch a query
 `listen` tells you *that* something changed. `watch` tells you *what* your query now returns. It runs the query once up front, then again after each commit
 that could change the result. `f` fires only when the result actually differs from the previous one.
 
 ```scala
-val sub = db.watch(_.where[Employee](_.salary > 100_000L).run.map(_.email))(emails => println(emails))
+val sub = conn.watch(_.where[Employee](_.salary > 100_000L).run.map(_.email))(emails => println(emails))
 // prints the current emails now, then again whenever that set changes
 
-db.watch(_.count[Order])(n => println(s"$n orders"))
+conn.watch(_.count[Order])(n => println(s"$n orders"))
 ```
 
 - **Dependency tracking.** The query's reads are recorded per entity class, including ref targets it walks into. So a watch over `Employee` re-runs when an
@@ -515,8 +545,8 @@ db.watch(_.count[Order])(n => println(s"$n orders"))
 - Same ordering, isolation and `Subscription` handling as `listen`.
 
 > [!WARNING]
-> Read through the db handed to the query (`_.where...` / `s => s.where...`), not the outer `db`. Reads on the outer db aren't tracked, and they can see a
-> newer state than the one being reported.
+> Read through the db handed to the query (`_.where...` / `s => s.where...`), not `conn.db` or some other db. Those reads aren't tracked, and they can see
+> a different state than the one being reported.
 
 
 ## Predicates as index probes
@@ -567,11 +597,11 @@ For querying, you have two surfaces: (1/2) for-comprehensions over `where` for p
 Stitch `where[A]` results together with normal Scala for-comprehensions, no DSL.
 
 ```scala
-db.add(Order("m@x.io", "book", 20L), Order("a@x.io", "lamp", 90L))
+val withOrders = db.add(Order("m@x.io", "book", 20L), Order("a@x.io", "lamp", 90L))
 
 (for
-  e <- db.where[Employee]
-  o <- db.where[Order](_.buyer == e.email)
+  e <- withOrders.where[Employee]
+  o <- withOrders.where[Order](_.buyer == e.email)
 yield (e.name, o.item)).run
 // Vector(("Matt", "book"), ("Alice", "lamp"))
 ```
@@ -684,7 +714,7 @@ Query[A].countBy(f)    Map[K, Long]
 ```
 
 ```scala
-db.add(
+val db = Db(
   Order("m@x.io", "book", 20L),
   Order("m@x.io", "pen",   5L),
   Order("a@x.io", "lamp", 90L),
@@ -745,13 +775,14 @@ db.where[Employee](_.dept.name == "Engineering").pull(e => (e.email, e.name))
 By eid (from `TxReport.addedEids` or the log):
 
 ```scala
-val rep = db.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L))
+val rep = db.transact(Tx.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L)))
 val eid = rep.addedEids.head
+val db2 = rep.dbAfter
 
-db.byEid[Employee](eid)
+db2.byEid[Employee](eid)
 // Some(Employee(...))
 
-db.pullByEid[Employee](eid)(e => (e.name, e.dept(_.name)))
+db2.pullByEid[Employee](eid)(e => (e.name, e.dept(_.name)))
 // Some(("Matt", "Engineering"))
 ```
 
@@ -791,44 +822,42 @@ val triples = db.query[Department, Employee, Skill] { (d, e, s) =>
 ```
 
 ## Time travel through past states
-datomlite lets you (for a given "current" DB), read any past state or branch off a speculative transaction.
-
-In both cases the live `Db` remains untouched
+Every `Db` keeps its whole log, so you can read any past state of it. And since writes return a new `Db`, a speculative branch is just a write you
+don't keep.
 
 ```
 db.asOf(tx)               rewind to a tx id
 db.asOf(time)             rewind to a Time
 db.asOf("2026-01-15")     takes any ISO-8601
-db.snapshot               freeze current state
-db.withTx(tx)             speculative branch
+db.add(...)               a branch, db itself is untouched
 ```
 
 ```scala
-val rep1 = db.add(Employee("c@x.io", "Carol", Department("ENG", "Engineering")))
-val rep2 = db.add(Employee("d@x.io", "Dan",   Department("ENG", "Engineering")))
+val rep1 = db.transact(Tx.add(Employee("c@x.io", "Carol", Department("ENG", "Engineering"))))
+val rep2 = rep1.dbAfter.transact(Tx.add(Employee("d@x.io", "Dan", Department("ENG", "Engineering"))))
+val now = rep2.dbAfter
 
-db.where[Employee].count                    // 5
-db.asOf(rep1.tx).where[Employee].count      // 4, before Dan
-db.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
+now.where[Employee].count                    // 5
+now.asOf(rep1.tx).where[Employee].count      // 4, before Dan
+now.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
 ```
 
 ISO-8601 strings accept `Z` or `±HH:MM`, default UTC:
 
 ```scala
-db.asOf("2026-01-15").where[Employee].count             // by date
-db.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
+now.asOf("2026-01-15").where[Employee].count             // by date
+now.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
 ```
 
-Snapshot vs what-if:
+What-if:
 ```scala
-val snap   = db.snapshot
-val whatIf = db.withTx(Tx.add(Employee("e@x.io", "Eve",
-                                       Department("ENG", "Engineering"))))
+val whatIf = now.add(Employee("e@x.io", "Eve", Department("ENG", "Engineering")))
 
-snap.where[Employee].count     // 5, unchanged
 whatIf.where[Employee].count   // 6, includes Eve
-db.where[Employee].count       // 5, live untouched
+now.where[Employee].count      // 5, untouched
 ```
+
+On a `Conn`, `conn.db` is the snapshot: hold on to it and later commits won't touch it.
 
 ## History of every entity
 You can call `.log` on any datomlite to get the full history of triples... or `.history`/`.historyOf` to get the history of
@@ -845,17 +874,18 @@ Each datom carries `tx`, `time`, `Op.Assert | Op.Retract` and nothing is overwri
 ```scala
 val eng = Department("ENG", "Engineering")
 
-val rep1 = db.add(Employee("m@x.io", "Matt", eng, 120_000L))
-val rep2 = db.upsert(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
-db.retractWhere[Employee](_.email == "m@x.io")
+val rep1 = db.transact(Tx.add(Employee("m@x.io", "Matt", eng, 120_000L)))
+val db2 = rep1.dbAfter
+  .upsert(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
+  .retractWhere[Employee](_.email == "m@x.io")
 
-db.log
+db2.log
 // every Datom across every tx, with (eid, attr, value, tx, time, op)
 
-db.historyOf(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
+db2.historyOf(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
 // empty, no live entity matches
 
-db.history(rep1.addedEids.head)
+db2.history(rep1.addedEids.head)
 // full assert/retract trail for that eid
 ```
 
@@ -863,24 +893,25 @@ db.history(rep1.addedEids.head)
 When your database is a value, you can do fun things like diff it against another database, or the same database
 with some speculative transactions that have been applied to it.
 
-`a.diff(b)` returns `DbDiff(added, retracted)` over the live `(eid, attr, value)` triples. Composes with `snapshot`, `withTx`, `asOf` from the same lineage (see [Time travel](#time-travel)).
+`a.diff(b)` returns `DbDiff(added, retracted)` over the live `(eid, attr, value)` triples. Works for any two dbs from the same lineage: before and
+after a write, two branches, or `asOf` views (see [Time travel](#time-travel)).
 
 ```scala
-val before = db.snapshot
-db.upsertWhere[Employee](_.email == "m@x.io")(_.copy(name = "Matthieu"))
+val after = db.upsertWhere[Employee](_.email == "m@x.io")(_.copy(name = "Matthieu"))
 
-val d = before.diff(db)
+val d = db.diff(after)
 d.added.map(_.v)        // Vector("Matthieu")
 d.retracted.map(_.v)    // Vector("Matt")
 ```
 
-Pairs with `withTx` for what-if:
+Or for a what-if:
 
 ```scala
 val eng = Department("ENG", "Engineering")
-val whatIf = db.withTx(Tx.add(Employee("e@x.io", "Eve", eng, 100_000L)))
-db.diff(whatIf).added   // datoms Eve would add
+db.diff(db.add(Employee("e@x.io", "Eve", eng, 100_000L))).added   // datoms Eve would add
 ```
+
+A `TxReport` carries both sides, so `rep.dbBefore.diff(rep.dbAfter)` is what one commit changed.
 
 ## Negation as anti-join
 With **datomlite** `not(c)` is the "anti-join". A row passes if and only if substituting it into the negated subgoal produces no matches.
@@ -965,12 +996,11 @@ case class Node(
   children: Set[Node]
 ) derives Entity
 
-val db = Db()
 val d = Node("d", Set.empty)
 val c = Node("c", Set(d))
 val a = Node("a", Set(c))
 val b = Node("b", Set.empty)
-db.add(Node("root", Set(a, b)))
+val db = Db(Node("root", Set(a, b)))
 
 val reachable: Rule[Node, Node] = Rule.reaches[Node](_.children)
 
@@ -1016,15 +1046,16 @@ case class Off(
   boss: Option[String]
 ) derives Entity
 
-val db = Db()
-db.add(Off("Napoléon", None))
-db.add(Off("Davout",   Some("Napoléon")))
-db.add(Off("Ney",      Some("Napoléon")))
-db.add(Off("Murat",    Some("Napoléon")))
-db.add(Off("Friant",   Some("Davout")))
-db.add(Off("Gudin",    Some("Davout")))
-db.add(Off("Lasalle",  Some("Murat")))
-db.add(Off("Marchand", Some("Ney")))
+val db = Db(
+  Off("Napoléon", None),
+  Off("Davout",   Some("Napoléon")),
+  Off("Ney",      Some("Napoléon")),
+  Off("Murat",    Some("Napoléon")),
+  Off("Friant",   Some("Davout")),
+  Off("Gudin",    Some("Davout")),
+  Off("Lasalle",  Some("Murat")),
+  Off("Marchand", Some("Ney")),
+)
 
 val ancestor: Rule[Off, Off] =
   Rule.recursive[Off, Off] { self =>
@@ -1088,17 +1119,15 @@ case class Road(
 )
 given Entity[Road] = Entity.derived[Road].key(r => (r.from.code, r.to.code))
 
-val db = Db()
-Seq("PAR", "LYO", "MAR", "NCE", "BOR").foreach(c => db.add(Place(c)))
+def road(a: String, b: String) = Road(Place(a), Place(b))
 
-def road(a: String, b: String): Unit =
-  db.add(Road(Place(a), Place(b)))
-
-road("PAR", "LYO")
-road("LYO", "MAR")
-road("MAR", "PAR")   // cycle
-road("LYO", "NCE")
-road("PAR", "BOR")
+val db = Db(
+  road("PAR", "LYO"),
+  road("LYO", "MAR"),
+  road("MAR", "PAR"),   // cycle
+  road("LYO", "NCE"),
+  road("PAR", "BOR"),
+)
 
 val reachable: Rule[Place, Place] =
   Rule.recursive[Place, Place] { self =>
@@ -1136,19 +1165,16 @@ given Entity[Friend] = Entity.derived[Friend].key { f =>
   (x, y)
 }
 
-val db = Db()
-Seq("alice", "bob", "carol", "dave", "erin", "frank", "grace")
-  .foreach(h => db.add(Person(h)))
+def edge(x: String, y: String) = Friend(Person(x), Person(y))
 
-def edge(x: String, y: String): Unit =
-  db.add(Friend(Person(x), Person(y)))
-
-edge("alice", "bob")
-edge("alice", "carol")
-edge("bob",   "dave")
-edge("carol", "dave")
-edge("dave",  "erin")
-edge("frank", "grace")
+val db = Db(
+  edge("alice", "bob"),
+  edge("alice", "carol"),
+  edge("bob",   "dave"),
+  edge("carol", "dave"),
+  edge("dave",  "erin"),
+  edge("frank", "grace"),
+)
 
 /* `knows` is symmetric, two bodies one per orientation */
 val knows: Rule[Person, Person] =
@@ -1182,7 +1208,8 @@ db.query[Person, Person] { (x, y) =>
 ```
 
 ## Persistence and custom backends
-`FileStorage` ships for JVM and Native. Restart with the same path, the log replays.
+Storage is optional: a `Db` lives in memory. Hand a `Storage` to a `Conn` and every commit is appended to it. `FileStorage` ships for JVM and
+Native. Restart with the same path, the log replays.
 
 ```scala
 import datomlite.*
@@ -1190,13 +1217,16 @@ import java.nio.file.Path
 
 val eng = Department("ENG", "Engineering")
 
-val db = Db(FileStorage(Path.of("db.dlite")))
-db.add(Employee("m@x.io", "Matt", eng, 120_000L))
+val conn = Conn(FileStorage(Path.of("db.dlite")))
+conn.add(Employee("m@x.io", "Matt", eng, 120_000L))
 
 /* kill the JVM, restart with the same path */
-val db2 = Db(FileStorage(Path.of("db.dlite")))
-db2.where[Employee].one
+val conn2 = Conn(FileStorage(Path.of("db.dlite")))
+conn2.db.where[Employee].one
 // Some(Employee("m@x.io", "Matt", Department("ENG","Engineering"), 120000, Set(), None))
+
+/* or just read it into a value */
+val db = Db.load(FileStorage(Path.of("db.dlite")))
 ```
 
 Bring your own backend in two methods:
@@ -1207,26 +1237,31 @@ trait Storage:
   def append(datoms: Vector[Datom]): Unit   /* each tx, in order, before it becomes visible */
 ```
 
-`append` is called under the write lock, before the commit is published. If it throws, the tx aborts and nothing changes. Storage order therefore always
-matches `db.log`.
+`append` is called under the conn's write lock, before the commit is published. If it throws, the tx aborts and nothing changes. Storage order therefore
+always matches `conn.db.log`.
 
 > [!WARNING]
 > Durability is only as strong as your `append`. `FileStorage` writes but doesn't `fsync`, so an OS crash can lose recent txs. In a datascript-ish way you can implement `Storage` with `fsync` semantics if you need stronger guarantees.
 
 ## Sharing the db across threads
-`Db` is a plain value, pass it anywhere. Concurrent reads and writes are safe. Writes are serialized, reads never block, and `upsertWhere` / `tx` blocks
-are atomic read-modify-writes (see [Transaction guarantees](#faq)).
+`Db` is a plain immutable value, pass it anywhere and read it from any thread.
 
 ```scala
-val db: Db = Db()
-
 def loadAll(db: Db): Vector[Employee] = db.where[Employee].run
 
 given Db = db
 def countAll(using db: Db): Long = db.where[Employee].count
 ```
 
-`db.snapshot` freezes current state. `db.withTx(...)` is a what-if branch. Both are read-only (see [Time travel](#time-travel)).
+For one db that many threads write to, share a `Conn`. Writes are serialized, reads of `conn.db` never block, and `upsertWhere` / `tx` blocks are atomic
+read-modify-writes (see [Transaction guarantees](#faq)).
+
+```scala
+val conn = Conn(Db(Counter("hits", 0)))
+
+/* from any number of threads, no increment is lost */
+conn.upsertWhere[Counter](_.name == "hits")(c => c.copy(n = c.n + 1))
+```
 
 ## Debug: pretty-print state and log
 Print the live state or the raw log to stdout.

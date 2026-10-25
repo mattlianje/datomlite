@@ -5,7 +5,7 @@ import scala.concurrent.ExecutionContext
 import scala.util.NotGiven
 import scala.util.control.NonFatal
 
-/** What `db.listen` and `db.watch` hand back
+/** What `conn.listen` and `conn.watch` hand back
   *
   * `cancel()` stops the callbacks. Safe to call twice. `close()` does the same so it works with
   * `Using`
@@ -17,22 +17,12 @@ final class Subscription private[datomlite] (onCancel: () => Unit) extends AutoC
   def close(): Unit = cancel()
 }
 
-object Subscription {
-
-  /** Already cancelled. Read-only views hand this back since they never fire */
-  private[datomlite] def inactive: Subscription = {
-    val s = new Subscription(() => ())
-    s.cancel()
-    s
-  }
-}
-
 /** Proof a watched result is a plain value we can compare with `==` between commits
   *
   * `Query` and `TypedSelector` are lazy and never compare equal
   */
 @implicitNotFound(
-  "db.watch needs a materialized result to compare between commits; end the query with .run, " +
+  "conn.watch needs a materialized result to compare between commits; end the query with .run, " +
     ".one, .count or .toSet, got ${T}"
 )
 sealed trait Eager[T]
@@ -96,7 +86,7 @@ private[datomlite] object Deps {
 
 /** Hands commits to listeners and watches in tx order
   *
-  * Commits enqueue under the db's write lock so the queue is in tx order. The first caller of
+  * Commits enqueue under the conn's write lock so the queue is in tx order. The first caller of
   * `drain` delivers everything queued, one event at a time. Anyone else who calls it meanwhile (a
   * listener that writes, say) sees the drain running and leaves their event to it. A callback that
   * throws gets reported and never reaches the committer
@@ -148,8 +138,8 @@ final private[datomlite] class Hub {
 
   def listen(f: TxReport => Unit): Subscription = subscribe(new ListenSink(f), None)
 
-  /** Add a watch whose first run sees `state`. Call under the db's write lock so no commit slips in
-    * between
+  /** Add a watch whose first run sees `state`. Call under the conn's write lock so no commit slips
+    * in between
     */
   def watch[T](q: Db => T, f: T => Unit, state: State): Subscription = {
     val s = new WatchSink(q, f)
@@ -168,7 +158,7 @@ final private[datomlite] class Hub {
     })
   }
 
-  /** Queue a commit. Call under the db's write lock so events queue in tx order */
+  /** Queue a commit. Call under the conn's write lock so events queue in tx order */
   def committed(rep: TxReport, state: State): Unit = lock.synchronized {
     if sinks.nonEmpty then {
       seq += 1

@@ -104,16 +104,15 @@ class RangeTest extends munit.FunSuite:
     assertEquals(db.count[Person](_.age > 30L), 4L)
     assert(db.exists[Person](_.age > 50L))
     assert(!db.exists[Person](_.age > 60L))
-    db.upsertWhere[Person](_.age >= 40L)(p => p.copy(name = p.name.toUpperCase))
-    assertEquals(names(db.where[Person](_.age >= 40L)), Set("BOB", "CAROL"))
-    db.retractWhere[Person](_.age < 31L)
-    assertEquals(db.count[Person], 4L)
+    val shouted = db.upsertWhere[Person](_.age >= 40L)(p => p.copy(name = p.name.toUpperCase))
+    assertEquals(names(shouted.where[Person](_.age >= 40L)), Set("BOB", "CAROL"))
+    assertEquals(shouted.retractWhere[Person](_.age < 31L).count[Person], 4L)
 
   test("range probes follow writes and retracts"):
     val db = people
-    db.retractWhere[Person](_.email == "b@x.io")
-    db.add(Person("z@x.io", "Zed", 45L, 0.0))
-    db.upsert(Person("m@x.io", "Matt", 60L, 1.5))
+      .retractWhere[Person](_.email == "b@x.io")
+      .add(Person("z@x.io", "Zed", 45L, 0.0))
+      .upsert(Person("m@x.io", "Matt", 60L, 1.5))
     assertEquals(names(db.where[Person](_.age > 40L)), Set("Carol", "Zed", "Matt"))
 
   test("typed query: range on a field, alone and as a between"):

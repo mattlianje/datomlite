@@ -48,7 +48,7 @@ trait DbInternal {
     */
   def eidOf[A](a: A)(using Entity[A]): Option[Long]
 
-  /** Snap a fresh `PullCtx` against the current state.
+  /** A `PullCtx` over this db's state.
     *
     * Each pull entry point grabs one of these so lazy field reads inside a closure all see the same
     * world
