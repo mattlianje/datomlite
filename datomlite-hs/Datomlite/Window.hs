@@ -1,6 +1,3 @@
--- Window functions. A query gives back a plain list so these are list
--- functions too... group the rows, sort each group and give every row a value
--- worked out from its group
 module Datomlite.Window
   ( Window
   , window

@@ -1,8 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
--- The append-only EAV log and the 'Db' value. Two indexes over the live facts
--- move in lockstep with the log. EAVT is for reading an entity and AVET is for
--- keys and lookups by value
+-- The append-only EAV log and the 'Db' value
 module Datomlite.Core
   ( -- * Core EAV values
     EntityId (..)
@@ -70,7 +68,6 @@ import           Data.Text (Text)
 import qualified Data.Text as T
 import           Data.Time (Day, UTCTime)
 
--- | An entity id. Stable and opaque.
 newtype EntityId = EntityId Int
   deriving (Eq, Ord, Show, Read)
 

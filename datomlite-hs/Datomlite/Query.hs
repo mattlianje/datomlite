@@ -9,8 +9,9 @@
 {-# LANGUAGE TypeOperators          #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
--- Queries are a list monad over a fixed 'Db'. 'match' scans and 'guard'
--- filters... 'follow' and 'matchBy' look the entity up directly
+-- Queries are a list monad over a fixed 'Db'
+-- 'match' scans and 'guard' -- filters...
+-- 'follow' and 'matchBy' look the entity up directly
 module Datomlite.Query
   ( -- * The query monad
     Query
@@ -74,9 +75,9 @@ match = Query (every @a)
 -- the index:
 --
 -- @
--- e <- matchBy \@Employee \@\"email\" \"m\@x.io\"   -- an identity
--- e <- matchBy \@Employee \@\"dept\" (refOf d)     -- a reverse ref
--- e <- matchBy \@Employee \@\"skills\" haskell     -- one of many
+-- e <- matchBy \@Employee \@\"email\" \"m\@x.io\" -- an identity
+-- e <- matchBy \@Employee \@\"dept\" (refOf d) -- a reverse ref
+-- e <- matchBy \@Employee \@\"skills\" haskell -- one of many
 -- e <- matchBy \@Employee \@\"dept\" (ref \@Department \"ENG\")
 -- @
 --
