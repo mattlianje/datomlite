@@ -34,7 +34,7 @@ object Row {
   /** Macro target for `row.fieldName`.
     *
     * Rewrites the access into `Row.field[A, FieldType](row, "fieldName")`. Validates the field name
-    * against `A`'s case-class shape; an unknown field is a compile error
+    * against `A`'s case-class shape. An unknown field is a compile error
     */
   def selectImpl[A: Type](row: Expr[Row[A]], name: Expr[String])(using Quotes): Expr[Any] = {
     import quotes.reflect.*

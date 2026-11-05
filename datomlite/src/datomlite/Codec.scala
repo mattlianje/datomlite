@@ -22,10 +22,8 @@ import scala.deriving.Mirror
 )
 trait Codec[T] {
 
-  /** Value to stored form */
   def encode(t: T): Any
 
-  /** Stored form back to a value */
   def decode(v: Any): T
 }
 

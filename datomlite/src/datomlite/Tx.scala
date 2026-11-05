@@ -48,17 +48,11 @@ object Tx {
   def batch(steps: Tx*): Tx = Batch(steps.toVector)
   def fn(f: Db => Tx): Tx = Fn(f)
 
-  /** Retract every row matching `pred` in the state the tx applies to. AVET-eligible predicates
-    * probe the index
-    */
+  /** Retract every row matching `pred` in the state the tx applies to */
   inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): Tx =
     Fn(s => Retract(s.where[A](pred).run.map(a => Datum(a, e.asInstanceOf[Entity[Any]]))))
 
-  /** Run `f` on every row matching `pred` in the state the tx applies to and upsert the results
-    *
-    * The upsert resolves by `.key`, so changing the key field in `f` will create a new row instead
-    * of updating the matched one
-    */
+  /** Run `f` on every row matching `pred` in the state the tx applies to and upsert the results */
   inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): Tx =
     Fn(s => Upsert(s.where[A](pred).run.map(a => Datum(f(a), e.asInstanceOf[Entity[Any]]))))
 
@@ -91,22 +85,11 @@ final class TxBuilder private[datomlite] (val db: Db) {
     */
   def step(tx: Tx): Unit = { buf += tx; () }
 
-  /** Predicate-based retract step
-    *
-    * Retracts every row matching `pred` in the state-so-far, so rows added by earlier steps count.
-    * AVET-eligible predicates probe the index
-    */
+  /** Retract every row matching `pred` in the state-so-far, earlier steps included */
   inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): Unit =
     step(Tx.retractWhere[A](pred))
 
-  /** Predicate-based upsert step
-    *
-    * Runs `f` on every row matching `pred` in the state-so-far and upserts the results.
-    * AVET-eligible predicates probe the index
-    *
-    * The upsert resolves by `.key`, so changing the key field in `f` will create a new row instead
-    * of updating the matched one
-    */
+  /** Run `f` on every row matching `pred` in the state-so-far and upsert the results */
   inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): Unit =
     step(Tx.upsertWhere[A](pred)(f))
 

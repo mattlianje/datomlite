@@ -53,7 +53,6 @@ object Date {
     era * 146097L + doe - 719468L
   }
 
-  /** And back */
   private def daysToCivil(days: Long): (Int, Int, Int) = {
     val z = days + 719468L
     val era = (if z >= 0 then z else z - 146096) / 146097

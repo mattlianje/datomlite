@@ -18,8 +18,8 @@ object Db {
 
 /** An immutable database
   *
-  * Every write returns a new `Db` and leaves this one as it was, so a `Db` is a snapshot, a
-  * speculative branch and a time-travel view all at once. Share it freely across threads
+  * Every write returns a new `Db` and leaves this one as it was... so it's safe to share across
+  * threads
   *
   * {{{
   *   val db  = Db(matt, alice)

@@ -43,9 +43,7 @@ trait Writes[R] {
   inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): R =
     result(transact(Tx.upsertWhere[A](pred)(f)))
 
-  /** Multi-op atomic block
-    *
-    * Mix `add`, `retract`, `upsert`, `retractWhere` and `upsertWhere` calls on `b`. They all land
+  /** Mix `add`, `retract`, `upsert`, `retractWhere` and `upsertWhere` calls on `b`. They all land
     * under one tx id and either all commit or none do. Steps run in declared order against the
     * state-so-far, so retract-then-add of the same key is safe. Read through `b.db`
     */

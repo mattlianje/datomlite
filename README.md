@@ -129,7 +129,7 @@ No. Recursion goes through named rules, negation is top-level conjunctions only,
 **Differences from Datomic / Datascript?**<br>
 - Case classes are "the schema". There is no `:db/ident`, no attribute registration or otherwise separate cardinality/uniqueness facts.
 - Queries are typed Scala, not vectors of triples. Field access is compile-checked by the datomlite macros.
-- Single-process, single-writer. No peer/transactor, no client API
+- Single-process. Writes to a `Conn` are serialized. No peer/transactor, no client API
 
 **`Db` or `Conn`?**<br>
 A `Db` is an immutable value: `db.add(...)` returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
@@ -207,7 +207,10 @@ Write:
 ```
 db.add(values*)              assert one or more rows in one tx
 db.retract(values*)          retract by full equality, misses are silent
+db.upsert(values*)           assert, replacing whatever holds the same key
 db.retractWhere[A](pred)     find every match and retract in one tx
+db.upsertWhere[A](pred)(f)   find every match, apply f and upsert in one tx
+db.tx { b => ... }           several ops in one tx
 db.transact(tx)              apply a Tx value, get a TxReport back
 ```
 
@@ -258,11 +261,11 @@ db.where[Employee].head
 for e <- db.where[Employee] do println(e.name)
 ```
 
-`db.transact(tx)` returns a `TxReport` with the `tx` id and wall-clock `time` (both feed `asOf`, see [Time travel](#time-travel)) and the
+`db.transact(tx)` returns a `TxReport` with the `tx` id and wall-clock `time` (both feed `asOf`, see [Time travel](#time-travel-through-past-states)) and the
 `dbBefore` / `dbAfter` of the write.
 
 ## Keys and uniqueness
-Often, we want to enforce uniqueness of data in our datastore. This this end, **datomlite** lets you mark uniqueness keys:
+Often, we want to enforce uniqueness of data in our datastore. To this end, **datomlite** lets you mark uniqueness keys:
 ```
 @key                   identity field
 @unique                must be unique across the entity
@@ -392,7 +395,7 @@ Map("a" -> 1)              Vector(Vector("a", 1))   /* sorted, so equal maps sto
 Predicates, typed queries and pull all speak `T`. Literals get encoded going in, projections get decoded coming out.
 
 ```scala
-db.where[Account](_.tier == Tier.Pro).run                   /* AVET probe on "Pro" */
+db.where[Account](_.tier == Tier.Pro).run   /* AVET probe on "Pro" */
 db.query[Account](a => find(a.home) where (a.fee === Money(250))).run
 // Vector(Address("1 Main", "Paris"))
 ```
@@ -423,7 +426,7 @@ given Codec[Instant] = Codec.of[Instant, Long](_.toEpochMilli, Instant.ofEpochMi
 ```
 
 ## Tx blocks: batch multiple ops
-You'll often want to batch transaction that are to run sequentially, and **datomlite** supports this
+You'll often want to batch transactions that are to run sequentially, and **datomlite** supports this
 ```
 db.tx { b => ... }            mixed add/retract/upsert in one tx
 b.add / b.retract / b.upsert  inside the block
@@ -500,6 +503,7 @@ conn.db                      the db right now, a plain value
 conn.add / upsert / tx ...   commit and return a TxReport
 conn.listen(f)               hear every commit
 conn.watch(q)(f)             live query
+conn.close()                 close the storage
 ```
 
 ```scala
@@ -833,12 +837,14 @@ db.add(...)               a branch, db itself is untouched
 ```
 
 ```scala
-val rep1 = db.transact(Tx.add(Employee("c@x.io", "Carol", Department("ENG", "Engineering"))))
-val rep2 = rep1.dbAfter.transact(Tx.add(Employee("d@x.io", "Dan", Department("ENG", "Engineering"))))
+val eng = Department("ENG", "Engineering")
+
+val rep1 = db.transact(Tx.add(Employee("d@x.io", "Dan", eng, 90_000L)))
+val rep2 = rep1.dbAfter.transact(Tx.add(Employee("f@x.io", "Fay", eng, 95_000L)))
 val now = rep2.dbAfter
 
 now.where[Employee].count                    // 5
-now.asOf(rep1.tx).where[Employee].count      // 4, before Dan
+now.asOf(rep1.tx).where[Employee].count      // 4, before Fay
 now.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
 ```
 
@@ -851,7 +857,7 @@ now.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
 
 What-if:
 ```scala
-val whatIf = now.add(Employee("e@x.io", "Eve", Department("ENG", "Engineering")))
+val whatIf = now.add(Employee("e@x.io", "Eve", eng, 100_000L))
 
 whatIf.where[Employee].count   // 6, includes Eve
 now.where[Employee].count      // 5, untouched
@@ -860,7 +866,7 @@ now.where[Employee].count      // 5, untouched
 On a `Conn`, `conn.db` is the snapshot: hold on to it and later commits won't touch it.
 
 ## History of every entity
-You can call `.log` on any datomlite to get the full history of triples... or `.history`/`.historyOf` to get the history of
+You can call `.log` on any db to get the full history of triples... or `.history`/`.historyOf` to get the history of
 specific entities.
 
 ```
@@ -894,7 +900,7 @@ When your database is a value, you can do fun things like diff it against anothe
 with some speculative transactions that have been applied to it.
 
 `a.diff(b)` returns `DbDiff(added, retracted)` over the live `(eid, attr, value)` triples. Works for any two dbs from the same lineage: before and
-after a write, two branches, or `asOf` views (see [Time travel](#time-travel)).
+after a write, two branches, or `asOf` views (see [Time travel](#time-travel-through-past-states)).
 
 ```scala
 val after = db.upsertWhere[Employee](_.email == "m@x.io")(_.copy(name = "Matthieu"))
@@ -1101,7 +1107,7 @@ WITH RECURSIVE ancestor(anc, desc) AS (
   SELECT a.anc, o.name
   FROM ancestor a JOIN off o ON o.boss = a.desc
 )
-SELECT desc FROM ancestor WHERE anc = 'Napoleon';
+SELECT desc FROM ancestor WHERE anc = 'Napoléon';
 ```
 
 #### Directed graph (Roads)
@@ -1229,12 +1235,13 @@ conn2.db.where[Employee].one
 val db = Db.load(FileStorage(Path.of("db.dlite")))
 ```
 
-Bring your own backend in two methods:
+Bring your own backend in two methods (plus an optional `close`):
 
 ```scala
 trait Storage:
   def load(): Vector[Datom]                 /* once at boot */
   def append(datoms: Vector[Datom]): Unit   /* each tx, in order, before it becomes visible */
+  def close(): Unit = ()                    /* on conn.close() */
 ```
 
 `append` is called under the conn's write lock, before the commit is published. If it throws, the tx aborts and nothing changes. Storage order therefore

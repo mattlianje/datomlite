@@ -372,13 +372,8 @@ private[datomlite] object DbImpl {
         }
     }
 
-  /** Per-field decision for the shape walk.
-    *
-    * `Plain` is the static case... Value, MultiValue, Optional (and an empty OptionalRef) all
-    * collapse into a vector of (attr, stored value) pairs that the caller drops onto its
-    * accumulator unchanged. `Ref` and `MultiRef` hand the caller the target entity and the nested
-    * value(s) so `assertEntityRec` (which inserts) and `flattenForLookup` (which probes) can each
-    * do their own thing without duplicating the per-shape switch
+  /** What the shape walk makes of one field. `Plain` pairs are used as is... `Ref` / `MultiRef`
+    * hand back the target so the caller can recurse into it
     */
   sealed private trait FieldAction
   private object FieldAction {

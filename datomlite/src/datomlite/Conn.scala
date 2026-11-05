@@ -89,7 +89,6 @@ final class Conn private (init: Db, storage: Storage) extends Writes[TxReport] w
     sub
   }
 
-  /** Close the storage */
   def close(): Unit = storage.close()
 
   override def toString: String = s"Conn($current)"
