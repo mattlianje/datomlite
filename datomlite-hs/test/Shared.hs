@@ -7,8 +7,6 @@
 {-# LANGUAGE TypeApplications      #-}
 {-# LANGUAGE TypeFamilies          #-}
 
--- Records that share field names, and the by-name helpers that cope with them:
--- setField, matchBy, exists and none.
 module Shared (sharedTests) where
 
 import           Control.Monad    (guard)

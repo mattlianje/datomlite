@@ -9,11 +9,12 @@
 {-# LANGUAGE TypeFamilies         #-}
 
 import           Control.Applicative    ((<|>))
-import           Control.Concurrent     (forkIO, threadDelay)
+import           Control.Concurrent     (forkIO, newEmptyMVar, putMVar, readMVar, takeMVar,
+                                         threadDelay)
 import           Control.Concurrent.STM (TVar, atomically, check, modifyTVar',
                                          newTVarIO, readTVar, readTVarIO)
 import           Control.Exception      (ErrorCall (..), evaluate, throwIO, try)
-import           Control.Monad   (forM_, guard, void, when)
+import           Control.Monad   (forM_, guard, join, replicateM_, void, when)
 import qualified Data.ByteString as BS
 import           Data.List       (sort)
 import           Data.Ord        (Down (..))
@@ -66,7 +67,6 @@ data Account = Account
 instance Entity Account where
   type Identity Account = '["handle", "mail"]
 
--- An optional identity
 data Badge = Badge
   { owner  :: Text
   , serial :: Maybe Text
@@ -90,6 +90,13 @@ data Pal = Pal { pal :: Text } deriving (Generic, Show, Eq)
 instance Entity Pal where
   type Identity Pal = '["pal"]
 data Friend = Friend { fa :: Ref Pal, fb :: Ref Pal } deriving (Generic, Show, Eq, Entity)
+
+data Counter = Counter
+  { counter :: Text
+  , hits    :: Int
+  } deriving (Generic, Show, Eq)
+instance Entity Counter where
+  type Identity Counter = '["counter"]
 
 data Note = Note
   { body :: Maybe Text
@@ -116,7 +123,6 @@ data Reading = Reading
 instance Entity Reading where
   type Identity Reading = '["sensor"]
 
--- The plain record behind a ref
 loadR :: Entity a => Ref a -> Db -> Maybe a
 loadR r = fmap recordOf . load r
 
@@ -125,7 +131,7 @@ reading = Reading
   { sensor  = Sensor "s1"
   , level   = High
   , celsius = 21.5
-  , ticks   = 2 ^ (80 :: Int) -- past the range of Int
+  , ticks   = 2 ^ (80 :: Int)
   , payload = BS.pack [0, 255, 10]
   , takenAt = UTCTime (fromGregorian 2026 10 13) 3600.25
   , takenOn = fromGregorian 2026 10 13
@@ -157,7 +163,6 @@ tests = testGroup "Datomlite"
   , sharedTests
   ]
 
--- Low-level EAV log
 coreTests :: TestTree
 coreTests = testGroup "Core (EAV log)"
   [ testCase "transact is pure; input db unchanged" $ do
@@ -285,6 +290,16 @@ loadTests = testGroup "Reading back (load)"
       let (_, db) = Raw.transact [assert (EntityId 1) "Department/code" (VText "ENG")] emptyDb
       r <- try (evaluate (length (every @Department db)))
       r @?= Left (MissingField "Department/deptName" (EntityId 1))
+
+  , testCase "a Maybe or Set field added later reads as empty" $ do
+      let (_, db) = Raw.transact
+            [ assert (EntityId 1) "Department/code"     (VText "ENG")
+            , assert (EntityId 1) "Department/deptName" (VText "Engineering")
+            , assert (EntityId 2) "Employee/email"      (VText "m@x.io")
+            , assert (EntityId 2) "Employee/name"       (VText "Max")
+            , assert (EntityId 2) "Employee/dept"       (VRef (EntityId 1)) ] emptyDb
+      Just eng <- pure (find @Department "ENG" db)
+      map recordOf (every @Employee db) @?= [Employee "m@x.io" "Max" Nothing (refOf eng) mempty]
 
   , testCase "a field whose type changed throws BadValue" $ do
       let (_, db) = Raw.transact [ assert (EntityId 1) "Department/code"     (VInt 7)
@@ -577,6 +592,15 @@ uniqueTests = testGroup "Uniqueness (Identity)"
       (deptName <$> loadR new' db2) @?= Just "Engineering, reborn"
       loadR old db2 @?= Nothing
 
+  , testCase "two entities can swap identities in one transaction" $ do
+      Right ([eng, sal], db1) <- pure $ commit emptyDb $ traverse insert
+        [ Department "ENG" "Engineering", Department "SAL" "Sales" ]
+      Right db2 <- pure $ commit_ db1 $ do
+        update eng (setField @"code" "SAL")
+        update sal (setField @"code" "ENG")
+      refOf <$> find @Department "ENG" db2 @?= Just sal
+      refOf <$> find @Department "SAL" db2 @?= Just eng
+
   , testCase "each identity is unique on its own" $ do
       Right (_, db1) <- pure $ commit emptyDb (insert (Account "max" "m@x.io"))
       commit_ db1 (insert (Account "max" "other@x.io"))
@@ -615,6 +639,14 @@ lookupTests = testGroup "Reads and lookups (Stored, every, find, ref)"
       refOf <$> findBy @Account @"mail" "m@x.io" db @?= Just mx
       refOf <$> findBy @Account @"handle" "max" db  @?= Just mx
       findBy @Account @"handle" "m@x.io" db @?= Nothing
+
+  , testCase "refBy says which Identity" $ do
+      Right (mx, db1) <- pure $ commit emptyDb (insert (Account "max" "m@x.io"))
+      refOf <$> load (refBy @Account @"mail" "m@x.io") db1 @?= Just mx
+      Right db2 <- pure $ commit_ db1 (update (refBy @Account @"handle" "max") (setField @"mail" "max@x.io"))
+      (.mail) <$> load mx db2 @?= Just "max@x.io"
+      commit_ db2 (retract (refBy @Account @"mail" "m@x.io"))
+        @?= Left (UnknownIdentity "Account/mail" (VText "m@x.io"))
 
   , testCase "an optional identity is found by the value inside" $ do
       Right (b, db) <- pure $ commit emptyDb (insert (Badge "ann" (Just "B-1")))
@@ -805,6 +837,19 @@ ioTests = testGroup "IO edge (Conn + transact)"
       db <- snapshot conn
       length (every @Department db) @?= 1
 
+  , testCase "concurrent read-modify-writes never lose an update" $ do
+      conn <- connect emptyDb
+      Right (c, _) <- transact conn (insert (Counter "c" 0))
+      done <- newEmptyMVar
+      forM_ [1 .. 50 :: Int] $ \_ -> forkIO $ do
+        _ <- transact conn $ do
+          Just now <- load c <$> txDb
+          update c (setField @"hits" (now.hits + 1))
+        putMVar done ()
+      replicateM_ 50 (takeMVar done)
+      db <- snapshot conn
+      (.hits) <$> load c db @?= Just 50
+
   , testCase "commit is strict: a bottom value fails the commit, not a later read" $ do
       r <- try (evaluate (commit_ emptyDb (insert (Department "ENG" (error "boom")))))
       case r of
@@ -891,6 +936,37 @@ listenTests = testGroup "Listen and watch"
       Right (eng, _) <- transact conn (upsert (Department "ENG" "Platform"))
       _ <- transact conn (retract eng)
       waitFor seen ((== Just 0) . lastMay) >>= (@?= [0, 1, 0])
+
+  , testCase "a watch whose query throws keeps watching" $ do
+      conn <- connect emptyDb
+      (seen, rec) <- recorder
+      _ <- watch conn (\db -> let n = length (every @Skill db)
+                              in if n == 1 then error "expected in test" else n) rec
+      _ <- transact conn (insert (Skill "one"))
+      _ <- transact conn (insert (Skill "two"))
+      waitFor seen ((== Just 2) . lastMay) >>= (@?= [0, 2])
+
+  , testCase "stopping a watch stops it" $ do
+      conn <- connect emptyDb
+      (seen, rec) <- recorder
+      stop <- watch conn (length . every @Skill) rec
+      _ <- waitFor seen (== [0])
+      stop
+      _ <- transact conn (insert (Skill "one"))
+      threadDelay 50000
+      readTVarIO seen >>= (@?= [0])
+
+  , testCase "a listener can stop itself" $ do
+      conn <- connect emptyDb
+      (seen, rec) <- recorder
+      stopVar <- newEmptyMVar
+      stop <- listen conn (\r -> rec r >> join (readMVar stopVar))
+      putMVar stopVar stop
+      _ <- transact conn (insert (Skill "one"))
+      _ <- waitFor seen ((== 1) . length)
+      _ <- transact conn (insert (Skill "two"))
+      threadDelay 50000
+      map trTxId <$> readTVarIO seen >>= (@?= [TxId 1])
 
   , testCase "awaitAfter blocks until a newer commit" $ do
       conn <- connect emptyDb
