@@ -42,35 +42,40 @@ cd datomlite-hs && cabal repl
 
 ## Contents
 - [Quick start](#quick-start)
+- [Cheatsheet](#cheatsheet)
+- [How it works](#how-it-works)
 - [FAQ](#faq)
-- [Updates](#updates)
 - [Example schema](#example-schema)
-- [Operations](#operations)
-- [Identity and uniqueness](#identity-and-uniqueness)
-- [Finding and lookup refs](#finding-and-lookup-refs)
-- [Refs and cardinality](#refs-and-cardinality)
-- [Value types](#value-types)
-- [Optional fields](#optional-fields)
-- [Tx blocks](#tx-blocks-steps-that-need-each-other)
-- [Queries](#queries)
-  - [Do-block joins](#do-block-joins)
-  - [Indexed lookups](#indexed-lookups)
-  - [Typed fields](#typed-fields)
-  - [Reverse refs](#reverse-refs)
-  - [Aggregations](#aggregations)
-  - [Sort and paging](#sort-and-paging)
+- [Modelling your data](#identity-and-uniqueness)
+  - [Identity and uniqueness](#identity-and-uniqueness)
+  - [Lookup refs](#finding-and-lookup-refs)
+  - [Refs and cardinality](#refs-and-cardinality)
+  - [Optional fields](#optional-fields)
+  - [Value types](#value-types)
+- [Writing](#writing)
+  - [Tx blocks](#tx-blocks-steps-that-need-each-other)
+- [Reading](#reading)
+  - [Queries](#queries)
+    - [Do-block joins](#do-block-joins)
+    - [Indexed lookups](#indexed-lookups)
+    - [Typed fields](#typed-fields)
+    - [Reverse refs](#reverse-refs)
+    - [Aggregations](#aggregations)
+    - [Sort and paging](#sort-and-paging)
+  - [Negation](#negation-as-anti-join)
+  - [Existential subgoals](#existential-subgoals-semi-joins)
   - [Window functions](#window-functions)
+  - [Rules](#rules)
+    - [Recursive rules](#recursive-rules)
+    - [Graphs with cycles](#graphs-with-cycles)
 - [Time travel](#time-travel-through-past-states)
-- [History](#history-of-every-entity)
-- [Diff](#diff-two-databases)
-- [Negation](#negation-as-anti-join)
-- [Existential subgoals](#existential-subgoals-semi-joins)
-- [Rules](#rules)
-  - [Recursive rules](#recursive-rules)
-  - [Graphs with cycles](#graphs-with-cycles)
-- [Sharing the db](#sharing-the-db-across-threads)
-- [Listening and watching](#listening-and-watching)
-- [Saving and restoring](#saving-and-restoring)
+  - [History](#history-of-every-entity)
+  - [Diff](#diff-two-databases)
+- [Conn: a db that changes](#conn-a-db-that-changes)
+  - [Listen](#listen-for-db-changes)
+  - [Watch](#watch-a-query)
+  - [Persistence](#saving-and-restoring)
+  - [Sharing the db](#sharing-the-db-across-threads)
 - [Build / Contribute](#build--contribute)
 
 ## Quick start
@@ -129,72 +134,32 @@ query db' $ do
 Right db'' = commit_ db' [Delete (ref @Person "m@x.io")]
 ```
 
-## FAQ
+## Cheatsheet
+```
+every @A db / find @A v db       rows of A, like a collection
+query db $ do ...                joins, lookups, negation, rules
+commit_ db [Insert r, ...]       writes, each hands back a new db
+commit db $ do ...               a Tx block, for steps that need each other
+asOf / history / datoms          past states
+connect db                       one shared db: transact, listen, watch
+history / fromHistory            save and restore
+```
 
-**Is the `Db` really a value?**<br>
-Yes. A `Db` is an ordinary immutable Haskell value, `commit` is a pure
-function, and a snapshot is just the value you already hold.
-
-**What is it under the hood?**<br>
-An append-only log of `(entity, attribute, value)` datoms, plus in-memory
-indices over the live projection. `GHC.Generics` shreds your records into
+## How it works?
+Under the hood, datomlite is an append-only log of `(entity, attribute, value)`
+datoms, plus in-memory indices over the live projection. GHC.Generics shreds your records into
 datoms on write and puts them back together on read, so queries work with your
 original typed records.
 
-**What indices does it maintain?**<br>
-**EAVT** for live entity reads and **AVET** for value lookups, both derived from
-the log and updated in lockstep with each commit. `load` and `follow` are a map
-lookup, and identity checks are an AVET probe. `match @Employee` is a range scan
-over the `Employee/…` attributes. `matchBy` is an AVET probe. `guard` filters
-rows after they are produced, so reach for `matchBy` when you're matching a
-field against a value.
+The indices are **EAVT** for live entity reads and **AVET** for value lookups,
+both derived from the log and updated in lockstep with each commit. `load` and
+`follow` are a map lookup, and identity checks are an AVET probe.
 
-**Does it support all of Datalog?**<br>
-No. There is no Datalog engine. A query is a do-block in a list-like monad, so
-joins are nested loops. Recursion is ordinary Haskell recursion, and `closure`
-is the fixed point for graphs with cycles.
+For example, `match @Employee` is a range scan over the `Employee/…` attributes.
+However, as you'd hope `matchBy` is
+an AVET probe. `guard` filters rows *after* they are produced, so you will generally want
+to reach for `matchBy` when you're matching a field against a value.
 
-**Differences from Datomic / Datascript?**<br>
-- Records are "the schema". There is no `:db/ident`, no attribute registration,
-  and cardinality and uniqueness aren't separate facts.
-- Queries are typed Haskell, not vectors of triples. The compiler checks every
-  field access.
-- Single process. No peer or transactor and no client API.
-
-**Transaction guarantees?**<br>
-- **Atomicity.** All the writes in a commit land together or none do. A
-  `UniqueViolation`, an `abort` or a failed pattern gives you a `Left`, and
-  there is no new `Db` at all.
-- **Purity.** `commit db writes` is `Either TxError (result, Db)`. The input
-  `Db` is untouched, so there is nothing to lock.
-- **Linearizable commits.** Writers to a `Conn` take turns: `transact` runs the
-  whole `Tx` against the current db, evaluates it, then swaps it in, so each
-  commit sees the one before it. A `Tx` that throws (say, an `error` in a
-  field) throws at its `transact` and leaves the `Conn` as it was.
-- **Snapshot reads.** A `Db` never changes. `transact` hands back the one its
-  commit made, and `snapshot` the one the `Conn` holds now.
-
-**What if I change a record?**<br>
-Old datoms stay as they were, and `load` reads them back into the new type.
-- Adding a `Maybe` or `Set` field is free: old entities read it as `Nothing`
-  or empty.
-- Adding a required field, or changing a field's type, makes the old entities
-  unreadable as the new record. `load` throws a `LoadError` (`MissingField` or
-  `BadValue`) naming the attribute and entity, rather than quietly skipping
-  them.
-- `load` gives `Nothing` only when the entity has no facts of that type at
-  all, say a retracted entity or a record whose fields are all `Nothing`.
-
-**What can be an entity?**<br>
-A record with one constructor and named fields, since each field's name is its
-attribute. A positional constructor, a sum type or a fieldless type is a type
-error that says what to change.
-
-**What's missing?**<br>
-Pull, a storage engine (see [Saving and restoring](#saving-and-restoring)),
-pretty-printing and composite identities.
-
-## Updates
 Say we add two pugilists, Jet Li and Masvidal. That appends their datoms, and
 the live projection picks them up:
 
@@ -230,6 +195,53 @@ all 8 datoms (5 asserts, 3 retracts) and `datoms db'` has Jet Li's 2.
 <p align="center">
   <img src="../pix/datomlite-masvi2.svg" width="550">
 </p>
+
+## FAQ
+
+**Is the `Db` really a value?**<br>
+Yes. A `Db` is an ordinary immutable Haskell value and `commit` is a pure
+function. A snapshot is just the value you already hold.
+
+**Does it support all of Datalog?**<br>
+No. There is no Datalog engine. A query is a do-block in a list-like monad, so
+joins are nested loops. Recursion is ordinary Haskell recursion, and `closure`
+is the fixed point for graphs with cycles.
+
+**Differences from Datomic / Datascript?**<br>
+- Records are "the schema". There is no `:db/ident`, no attribute registration,
+  and cardinality and uniqueness aren't separate facts.
+- Queries are typed Haskell, not vectors of triples. The compiler checks every
+  field access.
+- There is a single process, without a peer or transactor and a client/server API.
+
+**Transaction guarantees?**<br>
+- **Atomicity.** All the writes in a commit land together or none do. A
+  `UniqueViolation`, an `abort` or a failed pattern gives you a `Left`, and
+  there is no new `Db` at all.
+- **Purity.** `commit db writes` is `Either TxError (result, Db)`. The input
+  `Db` is untouched, so there is nothing to lock.
+- **Linearizable commits.** Writers to a `Conn` take turns: `transact` runs the
+  whole `Tx` against the current db, evaluates it, then swaps it in, so each
+  commit sees the one before it. A `Tx` that throws (e.g. an `error` in a
+  field) throws at its `transact` and leaves the `Conn` as it was.
+- **Snapshot reads.** A `Db` never changes. `transact` hands back the one its
+  commit made, and `snapshot` the one the `Conn` holds now.
+
+**What if I change a record?**<br>
+Old datoms stay as they were, and `load` reads them back into the new type.
+- Adding a `Maybe` or `Set` field is free: old entities read it as `Nothing`
+  or empty.
+- Adding a required field, or changing a field's type, makes the old entities
+  unreadable as the new record. `load` throws a `LoadError` (`MissingField` or
+  `BadValue`) naming the attribute and entity, rather than quietly skipping
+  them.
+- `load` gives `Nothing` only when the entity has no facts of that type at
+  all, say a retracted entity or a record whose fields are all `Nothing`.
+
+**What can be an entity?**<br>
+A record with one constructor and named fields, since each field's name is its
+attribute. A positional constructor, a sum type or a fieldless type is a type
+error that says what to change.
 
 ## Example schema
 We'll use these vanilla domain entities throughout for example purposes...
@@ -318,69 +330,6 @@ import Datomlite
 ```
 
 </details>
-
-## Operations
-A commit takes a list of writes and applies them in order, all-or-nothing.
-Reads take a `Db` value, which never changes under you.
-
-Write:
-```
-Insert r               insert a record as a new entity
-Upsert r               insert, or update the entity already holding r's Identity
-Update ref f           change an entity with a function on its record
-Delete ref             retract every fact the entity holds
-setField @"f" v        a record -> record function that sets field f
-commit_ db [w, ...]    Either TxError db'
-commit db [w, ...]     Either TxError ((), db')
-```
-
-When a step needs an earlier step's result, write a [`Tx`
-do-block](#tx-blocks-steps-that-need-each-other) instead. `commit` takes either.
-
-Read:
-```
-load ref db          Maybe (Stored A)
-every @A db          [Stored A], in creation order
-find @A v db         Maybe (Stored A), by its Identity
-query db q           [a], run a Query
-```
-
-Reads give you a `Stored A`, the record plus its `Ref`: `p.name` for a field,
-`refOf p` for the ref, `recordOf p` for the record.
-
-```haskell
--- Adding
-Right db1 = commit_ db [Insert (Employee "c@x.io" "Carol" eng 100000 mempty Nothing)]
-Right db2 = commit_ db1
-  [ Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)
-  , Insert (Employee "e@x.io" "Eve" eng 95000 mempty Nothing)
-  ]
-
--- Lookups
-(.name) <$> find @Employee "c@x.io" db2 -- Just "Carol"
-map recordOf (every @Employee db2)      -- [Employee]
-query db2 $ do                          -- [Employee]
-  e <- match @Employee
-  guard (e.email == "m@x.io")
-  pure (recordOf e)
-
--- Retract
-Right db3 = commit_ db2 [Delete (ref @Employee "c@x.io")]
-
--- Quick checks: results are lists
-not (null (query db3 (byEmail "m@x.io")))  -- True
-length (every @Employee db3)               -- 5
-```
-
-A `Query` is a value, so a reusable lookup is just a function. `matchBy` finds
-the employee through the index instead of scanning them all:
-
-```haskell
-byEmail :: Text -> Query (Ref Employee)
-byEmail em = refOf <$> matchBy @Employee @"email" em
-```
-
-`basisT db` is the last transaction in a db.
 
 ## Identity and uniqueness
 To keep a field unique, name it in the record's `Identity`:
@@ -511,6 +460,34 @@ query db $ do
 You can also compare a ref field to a `Ref` you already have: `guard (e.dept ==
 eng)`.
 
+## Optional fields
+`Maybe a` writes a datom only on `Just`. `Nothing` is absence, not a stored
+null.
+
+```haskell
+query db $ do
+  e <- match @Employee
+  guard (e.nickname == Just "Matty")
+  pure e.email
+-- ["m@x.io"]
+
+query db $ do
+  e <- match @Employee
+  guard (e.nickname == Nothing)
+  pure e.email
+-- ["a@x.io","b@x.io"]
+```
+
+`oneOf` gives a row only when there's a value:
+
+```haskell
+query db $ do
+  e <- match @Employee
+  n <- oneOf e.nickname
+  pure (e.email, n)
+-- [("m@x.io","Matty")]
+```
+
 ## Value types
 A field holds one of these, bare or inside `Maybe` or `Set`:
 
@@ -553,33 +530,36 @@ entities holding the old name throw `BadValue` on read. A constructor with
 fields can't derive `ToValue`; make it its own entity and point at it with a
 `Ref`. `NaN` is a normal value: store it, match it, retract it.
 
-## Optional fields
-`Maybe a` writes a datom only on `Just`. `Nothing` is absence, not a stored
-null.
+## Writing
+A commit takes a list of writes and applies them in order, all-or-nothing. It
+hands back a new `Db` and leaves the one you passed in as it was.
 
-```haskell
-query db $ do
-  e <- match @Employee
-  guard (e.nickname == Just "Matty")
-  pure e.email
--- ["m@x.io"]
-
-query db $ do
-  e <- match @Employee
-  guard (e.nickname == Nothing)
-  pure e.email
--- ["a@x.io","b@x.io"]
+```
+Insert r               insert a record as a new entity
+Upsert r               insert, or update the entity already holding r's Identity
+Update ref f           change an entity with a function on its record
+Delete ref             retract every fact the entity holds
+setField @"f" v        a record -> record function that sets field f
+commit_ db [w, ...]    Either TxError db'
+commit db [w, ...]     Either TxError ((), db')
 ```
 
-`oneOf` gives a row only when there's a value:
+When a step needs an earlier step's result, write a [`Tx`
+do-block](#tx-blocks-steps-that-need-each-other) instead. `commit` takes either.
 
 ```haskell
-query db $ do
-  e <- match @Employee
-  n <- oneOf e.nickname
-  pure (e.email, n)
--- [("m@x.io","Matty")]
+-- Adding
+Right db1 = commit_ db [Insert (Employee "c@x.io" "Carol" eng 100000 mempty Nothing)]
+Right db2 = commit_ db1
+  [ Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)
+  , Insert (Employee "e@x.io" "Eve" eng 95000 mempty Nothing)
+  ]
+
+-- Retract
+Right db3 = commit_ db2 [Delete (ref @Employee "c@x.io")]
 ```
+
+`basisT db` is the last transaction in a db.
 
 ## Tx blocks: steps that need each other
 A list covers most writes. Use a `Tx` do-block when a step needs an earlier
@@ -605,8 +585,8 @@ Right (carol, _) = commit db $ insert (Employee "c@x.io" "Carol" eng 100000 memp
 ```haskell
 Right db' = commit_ db $ do
   now <- txDb
-  for_ (query now (byEmail "m@x.io")) $ \r ->
-    update r (setField @"name" "Matthieu")
+  for_ (find @Employee "m@x.io" now) $ \e ->
+    update (refOf e) (setField @"name" "Matthieu")
   insert (Order "m@x.io" "book" 20)
 ```
 
@@ -656,6 +636,41 @@ UniqueViolation attr v es    an Identity value the entities es would share
 UnknownIdentity attr v       a ref nothing holds
 UnknownEntity eid            update on an entity with no facts
 Aborted msg                  abort, or a failed pattern
+```
+
+## Reading
+Reads take a `Db` value, which never changes under you.
+
+```
+load ref db          Maybe (Stored A)
+every @A db          [Stored A], in creation order
+find @A v db         Maybe (Stored A), by its Identity
+query db q           [a], run a Query
+```
+
+Reads give you a `Stored A`, the record plus its `Ref`: `p.name` for a field,
+`refOf p` for the ref, `recordOf p` for the record.
+
+```haskell
+-- Lookups
+(.name) <$> find @Employee "c@x.io" db2 -- Just "Carol"
+map recordOf (every @Employee db2)      -- [Employee]
+query db2 $ do                          -- [Employee]
+  e <- match @Employee
+  guard (e.email == "m@x.io")
+  pure (recordOf e)
+
+-- Quick checks: results are lists
+not (null (query db3 (byEmail "m@x.io")))  -- True
+length (every @Employee db3)               -- 5
+```
+
+A `Query` is a value, so a reusable lookup is just a function. `matchBy` finds
+the employee through the index instead of scanning them all:
+
+```haskell
+byEmail :: Text -> Query (Ref Employee)
+byEmail em = refOf <$> matchBy @Employee @"email" em
 ```
 
 ## Queries
@@ -747,7 +762,34 @@ take 2 . sortOn (Down . snd) $ query db $ do
 -- [("Bob",150000),("Matt",120000)]
 ```
 
-### Window functions
+## Negation as anti-join
+`none` keeps a row only when a subquery comes back empty. The subquery runs
+against the same db as the query around it, so this works unchanged on an
+`asOf` or a what-if:
+
+```haskell
+-- employees with no orders
+query db2 $ do
+  e <- match @Employee
+  none (matchBy @Order @"buyer" e.email)
+  pure e.name
+-- ["Carol","Dan","Eve"]
+```
+
+## Existential subgoals (semi-joins)
+Sometimes you only need to know a match exists, not what it is. `exists` keeps
+the row once, however many matches there are:
+
+```haskell
+-- orders whose buyer exists as a registered Employee
+query db $ do
+  o <- match @Order
+  exists (byEmail o.buyer)
+  pure o.item
+-- ["book","lamp","chair"]
+```
+
+## Window functions
 SQL's `rank() OVER (PARTITION BY ... ORDER BY ...)`, as plain functions over
 the result list:
 
@@ -781,130 +823,6 @@ window deptOf (Down . salaryOf) ((,) <$> rank <*> whole (sum . map salaryOf)) pa
 ```
 
 Windows combine with `<*>` like above. Use `const ()` as `part` for one group.
-
-## Time travel through past states
-Queries run on any `Db` value, so you can read any past state or branch off a
-speculative transaction. Either way, the db you started from is untouched.
-
-```
-basisT db       the tx a db value reflects
-asOf t db       rewind to tx t
-asOfTime t db   rewind to a wall-clock time
-txTime tx db    when tx was committed
-since t db      only the facts added after tx t
-db              a snapshot is the value you already hold
-commit db tx    a what-if branch is a commit you don't keep
-```
-
-```haskell
-names :: Query Text
-names = do
-  e <- match @Employee
-  pure e.name
-
--- db' is db after the "Matthieu" rename from Tx blocks
-query db' names                      -- ["Matthieu","Alice","Bob"]
-query (asOf (basisT db) db') names   -- ["Matt","Alice","Bob"]
-query (since (basisT db) db2) names  -- ["Carol","Dan","Eve"]
-```
-
-`transact` stamps each transaction with the clock. `commit` is pure, so it
-doesn't. `commitAt t` uses a time you give it:
-
-```haskell
-conn <- connect db
-before <- getCurrentTime
-Right (_, now) <- transact conn [Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)]
-
-length (every @Employee (asOfTime before now))  -- 3, before Dan
-length (every @Employee now)                    -- 4
-```
-
-An unstamped transaction counts as happening at the stamp before it, so the pure
-seed above shows up at any time. Times never go backwards, even if the clock
-does. Each is logged as a `db/txInstant` datom, so it's in `history` and
-survives a save.
-
-A `since` view only has the newer facts, so an entity created before `t` and
-changed after is a fragment there. Typed reads skip fragments. Use `datoms` on
-the view for every fact.
-
-Snapshot vs what-if:
-```haskell
-let whatIf = commit_ db2 [Insert (Employee "z@x.io" "Zed" eng 1 mempty Nothing)]
-
-length (every @Employee db2)           -- 6
-length . every @Employee <$> whatIf    -- Right 7, includes Zed
-length (every @Employee db2)           -- 6, still
-```
-
-## History of every entity
-`history` gives the full log of datoms, and `refId` ties a `Ref` to its trail.
-
-```
-history db             every datom, oldest first
-datoms db              just the live facts
-refId ref              a Ref's EntityId, to filter a trail by
-```
-
-Each `Datom` carries its tx and an `Assert` or `Retract`, and nothing is
-overwritten. A trail survives retraction:
-
-```haskell
-Just carol = refOf <$> find @Employee "c@x.io" db2
-
-[ (dAttr d, dValue d, dTx d, dOp d) | d <- history db3, dEntity d == refId carol ]
--- [ ("Employee/email",  VText "c@x.io",    TxId 2, Assert)
--- , ("Employee/name",   VText "Carol",     TxId 2, Assert)
--- , ("Employee/dept",   VRef (EntityId 1), TxId 2, Assert)
--- , ("Employee/salary", VInt 100000,       TxId 2, Assert)
--- , ("Employee/dept",   VRef (EntityId 1), TxId 4, Retract)
--- , ... ]
-```
-
-To skip the schema, import `Datomlite.Raw`: stringly-typed `transact` and
-`assert`/`retract`, plus index probes like `lookupValue` and `entitiesWith`. Raw
-writes skip type and uniqueness checks. Import it qualified, since its
-`transact` and `retract` clash with the main ones.
-
-## Diff two databases
-Two db values diff like two lists. An unchanged fact is the same `Datom` in
-both, so a diff is list difference over `datoms`:
-
-```haskell
--- db' is db after the Tx blocks example: a rename plus a new order
-[ dValue d | d <- datoms db' \\ datoms db ]   -- added
--- [VText "Matthieu",VText "m@x.io",VText "book",VInt 20]
-[ dValue d | d <- datoms db \\ datoms db' ]   -- retracted
--- [VText "Matt"]
-```
-
-## Negation as anti-join
-`none` keeps a row only when a subquery comes back empty. The subquery runs
-against the same db as the query around it, so this works unchanged on an
-`asOf` or a what-if:
-
-```haskell
--- employees with no orders
-query db2 $ do
-  e <- match @Employee
-  none (matchBy @Order @"buyer" e.email)
-  pure e.name
--- ["Carol","Dan","Eve"]
-```
-
-## Existential subgoals (semi-joins)
-Sometimes you only need to know a match exists, not what it is. `exists` keeps
-the row once, however many matches there are:
-
-```haskell
--- orders whose buyer exists as a registered Employee
-query db $ do
-  o <- match @Order
-  exists (byEmail o.buyer)
-  pure o.item
--- ["book","lamp","chair"]
-```
 
 ## Rules
 A rule is just a function returning a `Query`. Call it anywhere in a do-block.
@@ -1060,7 +978,7 @@ knows x = (follow . (.b) =<< matchBy @Friend @"a" (refOf x))
 handleIs :: Text -> Query (Stored Person)
 handleIs = matchBy @Person @"handle"
 
--- Alice's cluster. She's in it too, through any friend and back
+-- Alice's cluster...
 query db $ do
   y <- closure knows =<< handleIs "alice"
   pure y.handle
@@ -1076,11 +994,108 @@ query db $ do
 Results come out nearest first. `closure` is lazy so `exists (closure ...)`
 stops at the first hit.
 
-## Sharing the db across threads
-`Db` is a plain value, so pass it anywhere. When threads need one shared current
-db, use a `Conn`, a mutable cell holding it. `transact` is `commit` on that
-cell. It takes the same writes, runs the **same** checks and returns the same
-result and new db. The `Conn` then holds that db:
+## Time travel through past states
+Queries run on any `Db` value, so you can read any past state or branch off a
+speculative transaction. Either way, the db you started from is untouched.
+
+```
+basisT db       the tx a db value reflects
+asOf t db       rewind to tx t
+asOfTime t db   rewind to a wall-clock time
+txTime tx db    when tx was committed
+since t db      only the facts added after tx t
+db              a snapshot is the value you already hold
+commit db tx    a what-if branch is a commit you don't keep
+```
+
+```haskell
+names :: Query Text
+names = do
+  e <- match @Employee
+  pure e.name
+
+-- db' is db after the "Matthieu" rename from Tx blocks
+query db' names                      -- ["Matthieu","Alice","Bob"]
+query (asOf (basisT db) db') names   -- ["Matt","Alice","Bob"]
+query (since (basisT db) db2) names  -- ["Carol","Dan","Eve"]
+```
+
+`transact` stamps each transaction with the clock. `commit` is pure, so it
+doesn't. `commitAt t` uses a time you give it:
+
+```haskell
+conn <- connect db
+before <- getCurrentTime
+Right (_, now) <- transact conn [Insert (Employee "d@x.io" "Dan" eng 90000 mempty Nothing)]
+
+length (every @Employee (asOfTime before now))  -- 3, before Dan
+length (every @Employee now)                    -- 4
+```
+
+An unstamped transaction counts as happening at the stamp before it, so the pure
+seed above shows up at any time. Times never go backwards, even if the clock
+does. Each is logged as a `db/txInstant` datom, so it's in `history` and
+survives a save.
+
+A `since` view only has the newer facts, so an entity created before `t` and
+changed after is a fragment there. Typed reads skip fragments. Use `datoms` on
+the view for every fact.
+
+Snapshot vs what-if:
+```haskell
+let whatIf = commit_ db2 [Insert (Employee "z@x.io" "Zed" eng 1 mempty Nothing)]
+
+length (every @Employee db2)           -- 6
+length . every @Employee <$> whatIf    -- Right 7, includes Zed
+length (every @Employee db2)           -- 6, still
+```
+
+## History of every entity
+`history` gives the full log of datoms, and `refId` ties a `Ref` to its trail.
+
+```
+history db             every datom, oldest first
+datoms db              just the live facts
+refId ref              a Ref's EntityId, to filter a trail by
+```
+
+Each `Datom` carries its tx and an `Assert` or `Retract`, and nothing is
+overwritten. A trail survives retraction:
+
+```haskell
+Just carol = refOf <$> find @Employee "c@x.io" db2
+
+[ (dAttr d, dValue d, dTx d, dOp d) | d <- history db3, dEntity d == refId carol ]
+-- [ ("Employee/email",  VText "c@x.io",    TxId 2, Assert)
+-- , ("Employee/name",   VText "Carol",     TxId 2, Assert)
+-- , ("Employee/dept",   VRef (EntityId 1), TxId 2, Assert)
+-- , ("Employee/salary", VInt 100000,       TxId 2, Assert)
+-- , ("Employee/dept",   VRef (EntityId 1), TxId 4, Retract)
+-- , ... ]
+```
+
+To skip the schema, import `Datomlite.Raw`: stringly-typed `transact` and
+`assert`/`retract`, plus index probes like `lookupValue` and `entitiesWith`. Raw
+writes skip type and uniqueness checks. Import it qualified, since its
+`transact` and `retract` clash with the main ones.
+
+## Diff two databases
+Two db values diff like two lists. An unchanged fact is the same `Datom` in
+both, so a diff is list difference over `datoms`:
+
+```haskell
+-- db' is db after the Tx blocks example: a rename plus a new order
+[ dValue d | d <- datoms db' \\ datoms db ]   -- added
+-- [VText "Matthieu",VText "m@x.io",VText "book",VInt 20]
+[ dValue d | d <- datoms db \\ datoms db' ]   -- retracted
+-- [VText "Matt"]
+```
+
+## Conn: a db that changes
+A `Db` value never changes. When threads need one shared current db, use a
+`Conn`, a mutable cell holding it. `transact` is `commit` on that cell. It takes
+the same writes, runs the **same** checks and returns the same result and new
+db. The `Conn` then holds that db:
 
 ```
 commit   db   w     Either TxError (r, Db)        pure, the db is yours
@@ -1101,28 +1116,18 @@ Right ((), db) <- transact conn
 (.name) <$> find @Employee "m@x.io" db  -- Just "Matt"
 ```
 
-The `db` you get back is the one your commit made, even if another thread has
-committed since. `snapshot conn` reads whatever is current, other threads'
-commits included.
-
-Everything else stays pure. Hand `db` to any function that reads.
-
-## Listening and watching
+## Listen for db changes
 A `Conn` holds its db in a `TVar`, so a subscriber is just a thread that waits
 for the next commit. Writers never wait on subscribers:
 
 ```
 listen conn f        IO (IO ()), f gets one TxReport per commit
-watch conn q f       IO (IO ()), f gets q's result, up front and on change
 awaitAfter conn t    STM Db, blocks until a commit newer than t
 ```
 
 ```haskell
 stop <- listen conn $ \r ->
   putStrLn (show (trTxId r) <> ": " <> show (length (trDatoms r)) <> " datoms")
-
-_ <- watch conn (length . every @Employee) $ \n ->
-  putStrLn (show n <> " employees")
 
 stop   -- unsubscribe
 ```
@@ -1131,11 +1136,28 @@ stop   -- unsubscribe
   listener that falls behind catches up from the log, one report per commit.
 - **Isolated.** Callbacks run on the subscriber's own thread, so they may read
   or commit. An exception is reported on stderr and never reaches `transact`.
-- **`watch` shows the latest result.** `q` runs on the newest db, so if commits
-  land faster than `f` keeps up, it skips the results in between.
 - **Asynchronous.** A callback may not have run yet when `transact` returns.
   To wait for a commit yourself, use `awaitAfter`. It is plain STM, so it
   composes with `orElse` and timeouts.
+
+## Watch a query
+`listen` tells you *that* something changed. `watch` tells you *what* a query
+now returns. It runs `q` up front, then again on each change, and hands the
+result to `f`:
+
+```
+watch conn q f       IO (IO ()), f gets q's result, up front and on change
+```
+
+```haskell
+stopWatch <- watch conn (length . every @Employee) $ \n ->
+  putStrLn (show n <> " employees")
+```
+
+- **`watch` shows the latest result.** `q` runs on the newest db, so if commits
+  land faster than `f` keeps up, it skips the results in between.
+- **Same as `listen` otherwise.** Callbacks run on the subscriber's own thread,
+  and the returned action unsubscribes.
 
 ## Saving and restoring
 The log is the database. Save its datoms and `fromHistory` rebuilds the `Db`,
@@ -1173,6 +1195,14 @@ A restored db picks up where the old one stopped: same entities, same past for
   `trDatoms` yourself after `transact` returns.
 - **`Show` is simple, not fast.** For a big log, write your own encoding. Every
   `Datom`, `Value` and id constructor is exported (ids from `Datomlite.Raw`).
+
+## Sharing the db across threads
+`Db` is a plain value, so pass it anywhere. The `db` you get back from
+`transact` is the one your commit made, even if another thread has committed
+since. `snapshot conn` reads whatever is current, other threads' commits
+included.
+
+Everything else stays pure. Hand `db` to any function that reads.
 
 ## Build / Contribute
 PRs welcome, but please keep it to boot-library deps...
