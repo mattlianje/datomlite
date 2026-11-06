@@ -215,28 +215,20 @@ is the fixed point for graphs with cycles.
 - There is a single process, without a peer or transactor and a client/server API.
 
 **Transaction guarantees?**<br>
-- **Atomicity.** All the writes in a commit land together or none do. A
-  `UniqueViolation`, an `abort` or a failed pattern gives you a `Left`, and
-  there is no new `Db` at all.
+- **Atomicity.** All the writes in a commit land together or none do.
 - **Purity.** `commit db writes` is `Either TxError (result, Db)`. The input
-  `Db` is untouched, so there is nothing to lock.
-- **Linearizable commits.** Writers to a `Conn` take turns: `transact` runs the
-  whole `Tx` against the current db, evaluates it, then swaps it in, so each
-  commit sees the one before it. A `Tx` that throws (e.g. an `error` in a
-  field) throws at its `transact` and leaves the `Conn` as it was.
+  db is untouched, so there is nothing to lock.
+- **Linearizable commits.** Writers to a `Conn` take turns wherein `transact` runs the
+  whole transaction against the current db, evaluates it, then swaps it in, so each
+  commit sees the one before it. A transaction that throws will leave the `Conn` as it was
 - **Snapshot reads.** A `Db` never changes. `transact` hands back the one its
   commit made, and `snapshot` the one the `Conn` holds now.
 
 **What if I change a record?**<br>
 Old datoms stay as they were, and `load` reads them back into the new type.
-- Adding a `Maybe` or `Set` field is free: old entities read it as `Nothing`
-  or empty.
-- Adding a required field, or changing a field's type, makes the old entities
-  unreadable as the new record. `load` throws a `LoadError` (`MissingField` or
-  `BadValue`) naming the attribute and entity, rather than quietly skipping
-  them.
-- `load` gives `Nothing` only when the entity has no facts of that type at
-  all, say a retracted entity or a record whose fields are all `Nothing`.
+If you tamper with fields - load will throw either a `MissingField` or `BadValue` 
+error, but this is already against the spirit of **datomlite** if you are using it
+beyond a cheap DB-as-a-value and trying to track entity migrations.
 
 **What can be an entity?**<br>
 A record with one constructor and named fields, since each field's name is its
@@ -341,12 +333,13 @@ ename                           override the attribute prefix
 
 The record stays plain. `email` is just a `Text`, whether you build it, `load`
 it or read `e.email` in a query. A typo is a compile error:
-`datomlite: Identity User names "emial" but User has no such field`.
+```
+datomlite: Identity User names "emial" but User has no such field
+```
 
 Each field in the list is unique on its own, like Datomic's
 `:db.unique/identity`. A duplicate, against the db or within the same commit,
-fails with `UniqueViolation` and writes nothing. A `Maybe` identity only counts
-when it's `Just`.
+fails with `UniqueViolation` and writes nothing.
 
 ```haskell
 data User = User
