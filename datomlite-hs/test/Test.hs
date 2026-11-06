@@ -34,6 +34,7 @@ import           Datomlite
 import           Datomlite.Raw hiding (retract, transact)
 import qualified Datomlite.Raw as Raw
 
+import           Demo             (demoTests)
 import           Shared           (sharedTests)
 
 data Department = Department
@@ -161,6 +162,7 @@ tests = testGroup "Datomlite"
   , closureTests
   , windowTests
   , sharedTests
+  , demoTests
   ]
 
 coreTests :: TestTree
