@@ -41,39 +41,46 @@ Try it in your REPL:
 
 ## Contents
 - [Quick start](#quick-start)
+- [Cheatsheet](#cheatsheet)
+- [How it works](#how-it-works)
 - [FAQ](#faq)
-- [Updates](#updates)
 - [Example schema](#example-schema)
-- [Operations](#operations)
-- [Keys and uniqueness](#keys-and-uniqueness)
-- [Refs and cardinality](#refs-and-cardinality)
-- [Optional fields](#optional-fields)
-- [Value types and codecs](#value-types-and-codecs)
-- [Tx blocks](#tx-blocks-batch-multiple-ops)
-- [Conn](#conn-a-db-that-changes)
-- [Listen](#listen-for-db-changes)
-- [Watch](#watch-a-query)
-- [Predicates](#predicates-as-index-probes)
-- [Queries](#queries)
-  - [For-comprehension joins](#for-comprehension-joins)
-  - [Typed queries](#typed-queries)
-  - [Named-tuple rows](#named-tuple-rows)
-  - [Aggregations](#aggregations)
-  - [Sort and paging](#sort-and-paging)
-- [Pull](#pull-to-shape-query-results)
-  - [Reverse refs](#reverse-refs)
-- [Time travel](#time-travel-through-past-states)
-- [History](#history-of-every-entity)
-- [Diff](#diff-two-databases)
-- [Negation](#negation-as-anti-join)
-- [Existential subgoals](#existential-subgoals-semi-joins)
-- [Window functions](#window-functions)
-- [Rules](#rules)
-  - [Self-ref closure (`Rule.reaches`)](#self-ref-closure-rulereaches)
-  - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
-  - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
-- [Persistence](#persistence-and-custom-backends)
-- [Sharing the db](#sharing-the-db-across-threads)
+- Modelling your data
+  - [Keys and uniqueness](#keys-and-uniqueness)
+  - [Refs and cardinality](#refs-and-cardinality)
+  - [Optional fields](#optional-fields)
+  - [Value types and codecs](#value-types-and-codecs)
+- Writing
+  - [Writes](#writing)
+  - [Tx blocks](#tx-blocks-batch-multiple-ops)
+- Reading
+  - [Reads](#reading)
+  - [Predicates](#predicates-as-index-probes)
+  - [Pull](#pull-to-shape-query-results)
+    - [Reverse refs](#reverse-refs)
+  - [Queries](#queries)
+    - [For-comprehension joins](#for-comprehension-joins)
+    - [Typed queries](#typed-queries)
+    - [Named-tuple rows](#named-tuple-rows)
+    - [Aggregations](#aggregations)
+    - [Sort and paging](#sort-and-paging)
+  - [Negation](#negation-as-anti-join)
+  - [Existential subgoals](#existential-subgoals-semi-joins)
+  - [Window functions](#window-functions)
+  - [Rules](#rules)
+    - [Self-ref closure (`Rule.reaches`)](#self-ref-closure-rulereaches)
+    - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
+    - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
+- Time travel
+  - [Past states](#time-travel-through-past-states)
+  - [History](#history-of-every-entity)
+  - [Diff](#diff-two-databases)
+- Conn: a db that changes
+  - [Conn](#conn-a-db-that-changes)
+  - [Listen](#listen-for-db-changes)
+  - [Watch](#watch-a-query)
+  - [Persistence](#persistence-and-custom-backends)
+  - [Sharing the db](#sharing-the-db-across-threads)
 - [Debug](#debug-pretty-print-state-and-log)
 - [Build / Contribute](#build--contribute)
 
@@ -97,6 +104,8 @@ for p <- db.where[Person] do println(p.name)
 
 /* Writes hand back a new db, the old one is untouched */
 val db2 = db.upsert(Person("m@x.io", "Matthieu"))
+db.where[Person](_.email == "m@x.io").one    // still Matt
+db2.where[Person](_.email == "m@x.io").one   // Matthieu
 
 /* Typed Datalog: joins, projections, aggs */
 db2.query[Person] { p =>
@@ -109,46 +118,25 @@ conn.retractWhere[Person](_.email == "m@x.io")
 conn.db.where[Person].run
 ```
 
-## FAQ
+## Cheatsheet
+```
+db.where[A](pred)                  rows of A, like a collection
+db.query[A, B] { ... }             joins, projections, aggregations, rules
+.pull(f)                           nested output, walks refs
+db.add / upsert / retractWhere     writes, each hands back a new db
+db.tx { b => ... }                 several writes in one tx
+db.asOf / history / diff           past states
+Conn(db)                           one shared db: listen, watch, storage
+db.pretty                          print the live state
+```
 
-**Why datomlite?**<br>
-First, for good-spirited fun and happy hacking. Second, I have long wanted a datastore "as-a-value" I can drop into my processes and throw my case classes
-at, without first carving EDN, registering attributes, or learning a finicky ersatz Datalog DSL.
-
-**What is it under the hood?**<br>
+## How it works
 Essentially, datomlite is a bunch of macro based niceties on top of an append-only log of `(eid, attr, value)` triples plus in-memory indices over the live
 projection. Your case classes are shredded into triples on write and reassembled on read,
 so queries feel like working with your original typed objects.
 
-**What indices does it maintain?**<br>
-**EAVT** for live entity reads, **AVET** for value lookups, and a **class index** to enumerate entities of a Scala type. All are derived from the append-only log and updated in lockstep with each commit.
+The indices are **EAVT** for live entity reads, **AVET** for value lookups, and a **class index** to enumerate entities of a Scala type. All are derived from the append-only log and updated in lockstep with each commit.
 
-**Does it support all of Datalog?**<br>
-No. Recursion goes through named rules, negation is top-level conjunctions only, and there is no built-in unification beyond the DSL.
-
-**Differences from Datomic / Datascript?**<br>
-- Case classes are "the schema". There is no `:db/ident`, no attribute registration or otherwise separate cardinality/uniqueness facts.
-- Queries are typed Scala, not vectors of triples. Field access is compile-checked by the datomlite macros.
-- Single-process. Writes to a `Conn` are serialized. No peer/transactor, no client API
-
-**`Db` or `Conn`?**<br>
-A `Db` is an immutable value: `db.add(...)` returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
-what-ifs and time travel. A `Conn` holds the current `Db` and swaps in a new one on each commit. Reach for it when several threads share one
-changing db, when you want `listen` / `watch`, or when commits should go to a `Storage`.
-
-**Transaction guarantees?**<br>
-- **Atomicity.** All asserts and retracts in a tx land together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
-- **Values.** A `Db` never changes, so reads on it never lock, never block, and always see one consistent state.
-- **Serialized commits.** Any number of threads can write to a `Conn`. Commits run one at a time, in order, under a short write lock.
-- **Atomic read-modify-write.** `retractWhere`, `upsertWhere`, `tx { ... }` and `Tx.fn` read the state inside the commit. So a concurrent `conn.upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
-- **Write-ahead append.** `Storage.append` runs before a commit becomes visible on the `Conn`. If it throws, the tx aborts: no state change and no listener fires.
-
-**What is the inspiration?**<br>
-Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/), [Datascript](https://github.com/tonsky/datascript), [Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is in the general orbit of Datalog flavoured triple stores, it puts particular (and to my knowledge novel) emphasis on type-safety and feeling 100% embedded into the host language. 
-
-**datomlite** is "DB-as-a-value": the `Db` is immutable and the one mutable thing, the `Conn`, is opt-in.
-
-## Updates
 Suppose we add two pugilists to our database, "Jet Li" and "Masvidal". Adding them appends datoms and the live projection picks them up:
 
 ```scala
@@ -182,6 +170,37 @@ The new db's live projection drops Masvi, but its log still has every datom (and
   <img src="pix/datomlite-masvi2.svg" width="550">
 </p>
 
+## FAQ
+
+**Why datomlite?**<br>
+First, for good-spirited fun and happy hacking. Second, I have long wanted a datastore "as-a-value" I can drop into my processes and throw my case classes
+at, without first carving EDN, registering attributes, or learning a finicky ersatz Datalog DSL.
+
+**Does it support all of Datalog?**<br>
+No. Recursion goes through named rules, negation is top-level conjunctions only, and there is no built-in unification beyond the DSL.
+
+**Differences from Datomic / Datascript?**<br>
+- Case classes are "the schema". There is no `:db/ident`, no attribute registration or otherwise separate cardinality/uniqueness facts.
+- Queries are typed Scala, not vectors of triples. Field access is compile-checked by the datomlite macros.
+- Single-process. Writes to a `Conn` are serialized. No peer/transactor, no client API
+
+**`Db` or `Conn`?**<br>
+A `Db` is an immutable value: `db.add(...)` returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
+what-ifs and time travel. A `Conn` holds the current `Db` and swaps in a new one on each commit. Reach for it when several threads share one
+changing db, when you want `listen` / `watch`, or when commits should go to a `Storage`.
+
+**Transaction guarantees?**<br>
+- **Atomicity.** All asserts and retracts in a tx land together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
+- **Values.** A `Db` never changes, so reads on it never lock, never block, and always see one consistent state.
+- **Serialized commits.** Any number of threads can write to a `Conn`. Commits run one at a time, in order, under a short write lock.
+- **Atomic read-modify-write.** Writes that read first (predicate writes, tx blocks, tx fns) do that read inside the commit. So a concurrent `conn.upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
+- **Write-ahead append.** `Storage.append` runs before a commit becomes visible on the `Conn`. If it throws, the tx aborts: no state change and no listener fires.
+
+**What is the inspiration?**<br>
+Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/), [Datascript](https://github.com/tonsky/datascript), [Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is in the general orbit of Datalog flavoured triple stores, it puts particular (and to my knowledge novel) emphasis on type-safety and feeling 100% embedded into the host language. 
+
+**datomlite** is "DB-as-a-value": the `Db` is immutable and the one mutable thing, the `Conn`, is opt-in.
+
 ## Example schema
 We'll use these vanilla domain entities throughout for example purposes...
 
@@ -200,69 +219,24 @@ case class Employee(
 ) derives Entity
 ```
 
-## Operations
-Writes are all-or-nothing and return the new `Db` (on a `Conn`, they commit and return a `TxReport`).
-
-Write:
-```
-db.add(values*)              assert one or more rows in one tx
-db.retract(values*)          retract by full equality, misses are silent
-db.upsert(values*)           assert, replacing whatever holds the same key
-db.retractWhere[A](pred)     find every match and retract in one tx
-db.upsertWhere[A](pred)(f)   find every match, apply f and upsert in one tx
-db.tx { b => ... }           several ops in one tx
-db.transact(tx)              apply a Tx value, get a TxReport back
-```
-
-Read:
-```
-db.where[A]                  Query[A] over all rows of A
-db.where[A](pred)            Query[A] filtered, equality / ranges / startsWith lower to probes
-db.exists[A](pred)           Boolean, short-circuits
-db.count[A](pred)            Long, no row materialization
-.run / .one                  materialize to Vector / Option
-```
+...and this db. Unless an example builds its own, `db` is this one:
 
 ```scala
 val eng = Department("ENG", "Engineering")
+val ops = Department("OPS", "Operations")
+val sc  = Skill("Scala")
+val hs  = Skill("Haskell")
 
-/* Adding */
-val db = Db(Employee("a@x.io", "Alice", eng, 100_000L))
-  .add(
-    Employee("b@x.io", "Bob",   eng, 120_000L),
-    Employee("c@x.io", "Carol", eng, 150_000L),
-  )
-
-/* Lookups */
-db.where[Employee].run                            // Vector[Employee]
-db.where[Employee](_.email == "m@x.io").one       // Option[Employee]
-db.where[Employee](_.name.startsWith("M")).run    // Vector[Employee]
-db.where[Employee](_.salary >= 120_000L).run      // Vector[Employee]
-
-/* Retract */
-val fewer = db
-  .retractWhere[Employee](_.email == "a@x.io")
-  .retractWhere[Employee](_.email == "b@x.io")
-
-/* Quick checks */
-db.exists[Employee](_.email == "m@x.io")        // Boolean
-db.count[Employee](_.name.startsWith("M"))      // Long
-db.count[Employee]                              // Long
+val db = Db(
+  Employee("m@x.io", "Matt",  eng, 120_000L, Set(sc, hs)),
+  Employee("a@x.io", "Alice", eng, 110_000L, Set(sc)),
+  Employee("b@x.io", "Bob",   ops, 150_000L),
+  Order("m@x.io", "book",  20L),
+  Order("m@x.io", "pen",    5L),
+  Order("a@x.io", "lamp",  90L),
+  Order("b@x.io", "chair", 60L),
+)
 ```
-
-
-
-`Query[A]` is the lazy `Iterable[A]` that `db.where[A]` returns. You materialize it with `.run` (`toVector`) or `.one` (`headOption`).
-
-```scala
-db.where[Employee].toList
-db.where[Employee].size
-db.where[Employee].head
-for e <- db.where[Employee] do println(e.name)
-```
-
-`db.transact(tx)` returns a `TxReport` with the `tx` id and wall-clock `time` (both feed `asOf`, see [Time travel](#time-travel-through-past-states)) and the
-`dbBefore` / `dbAfter` of the write.
 
 ## Keys and uniqueness
 Often, we want to enforce uniqueness of data in our datastore. To this end, **datomlite** lets you mark uniqueness keys:
@@ -314,7 +288,7 @@ Currently in datomlite, cardinality is a property of the Scala type, not a separ
 T          one datom per row
 Option[T]  one datom on Some, nothing on None
 Set[T]     one datom per element
-R          one datom, value is the target eid (needs Entity[R] in scope, target needs @key)
+R          one datom holding the target's eid (R needs an Entity and a @key)
 Option[R]  one target eid on Some, nothing on None
 Set[R]     one datom per target eid
 ```
@@ -342,9 +316,11 @@ val db = Db(
   Employee("a@x.io", "Alice",    eng, 110_000L),
 )
 
-db.where[Employee](_.nickname.contains("Matt")).run.map(_.email) // Vector("m@x.io")
+db.where[Employee](_.nickname.contains("Matt")).run.map(_.email)
+// Vector("m@x.io")
 
-db.where[Employee](_.nickname == None).run.map(_.email) // Vector("a@x.io")
+db.where[Employee](_.nickname == None).run.map(_.email)
+// Vector("a@x.io")
 ```
 
 In a typed query, `find(e.nickname)` projects the inner type, emits a row only when present.
@@ -359,7 +335,11 @@ db.query[Employee] { e =>
 An `Option` of an entity is an optional ref. `.contains` probes by the target, `===` joins through it, and pull gives back an `Option[Pull[R]]`.
 
 ```scala
-case class Mentor(@key email: String, name: String, mentor: Option[Mentor] = None) derives Entity
+case class Mentor(
+  @key email: String,
+  name: String,
+  mentor: Option[Mentor] = None
+) derives Entity
 
 val ann = Mentor("ann@x.io", "Ann")
 val db = Db(Mentor("bo@x.io", "Bo", Some(ann)))
@@ -369,9 +349,9 @@ db.where[Mentor](_.mentor.isEmpty).run.map(_.name)       // Vector("Ann")
 ```
 
 ## Value types and codecs
-Datoms store a small closed set of forms: `String`, `Int`, `Long`, `Double`, `Boolean`, `BigInt`, `BigDecimal`, and `Vector`s of those.
-Any other field type goes through a `Codec[T]` that maps it onto them. Givens ship for `Float`, `Short`, `Byte`, `Char`,
-`UUID`, `Time`, `Date`, collections, `Option`, `Either` and tuples. Case classes and enums get one with `derives Codec`.
+Datoms only store a few plain forms: strings, numbers, booleans and vectors of those.
+Any other field type goes through a `Codec[T]` that maps it onto one of them. The usual suspects (UUIDs, dates, collections,
+options, tuples...) already have one, and your own case classes and enums get one with `derives Codec`.
 
 ```scala
 enum Tier derives Codec:
@@ -382,14 +362,20 @@ case class Address(street: String, city: String) derives Codec
 case class Money(cents: Long)
 given Codec[Money] = Codec.of[Money, Long](_.cents, Money(_))
 
-case class Account(@key id: UUID, tier: Tier, home: Address, fee: Money, limits: Map[String, Int]) derives Entity
+case class Account(
+  @key id: UUID,
+  tier: Tier,
+  home: Address,
+  fee: Money,
+  limits: Map[String, Int]
+) derives Entity
 ```
 
 ```
 Tier.Pro                   "Pro"
 Address("1 Main", "Paris") Vector("street", "1 Main", "city", "Paris")
 Money(250)                 250L
-Map("a" -> 1)              Vector(Vector("a", 1))   /* sorted, so equal maps store equal */
+Map("a" -> 1)              Vector(Vector("a", 1))   /* entries sorted */
 ```
 
 Predicates, typed queries and pull all speak `T`. Literals get encoded going in, projections get decoded coming out.
@@ -401,7 +387,7 @@ db.query[Account](a => find(a.home) where (a.fee === Money(250))).run
 ```
 
 > [!NOTE]
-> Comparisons, `orderBy`, `min` / `max` run on the stored form. That is numeric for numbers, lexicographic for strings, and
+> Comparisons, sorting and min / max run on the stored form. That is numeric for numbers, lexicographic for strings, and
 > element by element for `Vector`s. So an enum sorts by case name, not by ordinal.
 
 ### Dates and times
@@ -421,9 +407,46 @@ db.where[Task](_.due < Date.today()).run          /* index slice, not a scan */
 They're plain numbers at runtime so print them with `.iso`. On the JVM `java.time` is one line away:
 
 ```scala
-given Codec[LocalDate] = Codec.of[LocalDate, Long](_.toEpochDay, LocalDate.ofEpochDay)
-given Codec[Instant] = Codec.of[Instant, Long](_.toEpochMilli, Instant.ofEpochMilli)
+given Codec[LocalDate] =
+  Codec.of[LocalDate, Long](_.toEpochDay, LocalDate.ofEpochDay)
+
+given Codec[Instant] =
+  Codec.of[Instant, Long](_.toEpochMilli, Instant.ofEpochMilli)
 ```
+
+## Writing
+Writes are all-or-nothing and return the new `Db` (on a `Conn`, they commit and return a `TxReport`).
+
+```
+db.add(values*)              assert one or more rows in one tx
+db.retract(values*)          retract by full equality, misses are silent
+db.upsert(values*)           assert, replacing whatever holds the same key
+db.retractWhere[A](pred)     find every match and retract in one tx
+db.upsertWhere[A](pred)(f)   find every match, apply f and upsert in one tx
+db.tx { b => ... }           several ops in one tx
+db.transact(tx)              apply a Tx value, get a TxReport back
+```
+
+```scala
+/* Adding */
+val db2 = db.add(
+  Employee("c@x.io", "Carol", eng, 95_000L),
+  Order("c@x.io", "desk", 200L),
+)
+
+/* Read-modify-write by predicate */
+val raised = db.upsertWhere[Employee](_.email == "m@x.io") { e =>
+  e.copy(salary = e.salary + 5_000L)
+}
+
+/* Retract */
+val fewer = db2
+  .retractWhere[Employee](_.email == "c@x.io")
+  .retractWhere[Order](_.buyer == "c@x.io")
+```
+
+`db.transact(tx)` returns a `TxReport` with the `tx` id and wall-clock `time` (both feed `asOf`, see [Time travel](#time-travel-through-past-states)) and the
+`dbBefore` / `dbAfter` of the write.
 
 ## Tx blocks: batch multiple ops
 You'll often want to batch transactions that are to run sequentially, and **datomlite** supports this
@@ -481,8 +504,13 @@ val rep = db.transact(tx)
 ```scala
 case class Counter(@key name: String, n: Long) derives Entity
 
-val bump = Tx.fn(s => Tx.upsert(s.where[Counter](_.name == "hits").run.map(c => c.copy(n = c.n + 1))*))
-val counted = db.transact(Tx.batch(Tx.add(Counter("hits", 0)), bump)).dbAfter   // hits = 1
+val bump = Tx.fn { s =>
+  val hits = s.where[Counter](_.name == "hits").run
+  Tx.upsert(hits.map(c => c.copy(n = c.n + 1))*)
+}
+
+val counted = db.transact(Tx.batch(Tx.add(Counter("hits", 0)), bump)).dbAfter
+counted.where[Counter].one   // Some(Counter("hits", 1))
 ```
 
 `transact` hands back a `TxReport` carrying
@@ -491,67 +519,35 @@ tx, time, adds, retracts, addedEids, datoms, dbBefore, dbAfter
 ```
 `datoms` holds exactly what the commit appended to the log. `dbAfter` is the db it made.
 
-## Conn: a db that changes
-A `Db` value never changes. When you want one db that a whole app shares and writes to, hold it in a `Conn`. It has the same write verbs as `Db`,
-but they commit in place and return the `TxReport`. `conn.db` is the current value.
+## Reading
+`Query[A]` is the lazy `Iterable[A]` that `db.where[A]` returns. You materialize it with `.run` (`toVector`) or `.one` (`headOption`).
 
 ```
-Conn()                       in-memory, empty
-Conn(db)                     in-memory, starting from db
-Conn(storage)                replays storage, appends each commit to it
-conn.db                      the db right now, a plain value
-conn.add / upsert / tx ...   commit and return a TxReport
-conn.listen(f)               hear every commit
-conn.watch(q)(f)             live query
-conn.close()                 close the storage
+db.where[A]                  Query[A] over all rows of A
+db.where[A](pred)            Query[A] filtered, probes the index where it can
+db.exists[A](pred)           Boolean, short-circuits
+db.count[A](pred)            Long, no row materialization
+.run / .one                  materialize to Vector / Option
 ```
 
 ```scala
-val conn = Conn(db)
-conn.add(Order("m@x.io", "book", 20L))
+/* Lookups */
+db.where[Employee].run                            // Vector[Employee]
+db.where[Employee](_.email == "m@x.io").one       // Option[Employee]
+db.where[Employee](_.name.startsWith("M")).run    // Vector[Employee]
+db.where[Employee](_.salary >= 120_000L).run      // Vector[Employee]
 
-val now = conn.db                 // a value, later commits don't touch it
-now.where[Order].count
+/* Quick checks */
+db.exists[Employee](_.email == "m@x.io")        // true
+db.count[Employee](_.name.startsWith("M"))      // 1
+db.count[Employee]                              // 3
+
+/* Still feels like a collection */
+db.where[Employee].toList
+db.where[Employee].size
+db.where[Employee].head
+for e <- db.where[Employee] do println(e.name)
 ```
-
-## Listen for db changes
-You often want to respond to changes made to your datastore, which is why a `Conn` has `.listen`.
-
-The callback fires after each successful commit with the `TxReport` (tx id, adds, retracts, addedEids, `dbAfter`...). Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
-
-```scala
-val sub = conn.listen { rep =>
-  println(s"tx ${rep.tx.value}: +${rep.adds.size} -${rep.retracts.size}")
-}
-sub.cancel() // or Using.resource(conn.listen(...)) { _ => ... }, Subscription is AutoCloseable
-```
-
-- Every commit once, in tx order, even with lots of writers. You only hear commits made after you subscribe.
-- If a listener throws the tx and other listeners are fine. The error goes to `ExecutionContext.defaultReporter`.
-- A listener can write to the conn. It hears that write once the current callback returns.
-- Callbacks run outside the lock but `transact` may wait on them... so keep them quick.
-
-## Watch a query
-`listen` tells you *that* something changed. `watch` tells you *what* your query now returns. It runs the query once up front, then again after each commit
-that could change the result. `f` fires only when the result actually differs from the previous one.
-
-```scala
-val sub = conn.watch(_.where[Employee](_.salary > 100_000L).run.map(_.email))(emails => println(emails))
-// prints the current emails now, then again whenever that set changes
-
-conn.watch(_.count[Order])(n => println(s"$n orders"))
-```
-
-- **Dependency tracking.** The query's reads are recorded per entity class, including ref targets it walks into. So a watch over `Employee` re-runs when an
-  `Employee` or its `Department` changes, and skips commits that only touch `Order`s.
-- **Materialized results only.** The query must return a value, not a lazy `Query` or selector, because a lazy result would compare by identity. `.run` it,
-  or `.count` it. The compiler tells you if you forget.
-- Same ordering, isolation and `Subscription` handling as `listen`.
-
-> [!WARNING]
-> Read through the db handed to the query (`_.where...` / `s => s.where...`), not `conn.db` or some other db. Those reads aren't tracked, and they can see
-> a different state than the one being reported.
-
 
 ## Predicates as index probes
 You will have noticed **datomlite** operations with predicates feel like operations on plain collections.
@@ -559,18 +555,25 @@ You will have noticed **datomlite** operations with predicates feel like operati
 Under the hood, when you use predicates, **datomlite**'s macros lift equality, comparisons and prefixes to index-probed queries (so you aren't scanning all your triples)
 
 ```scala
-db.where[Employee](_.email == "m@x.io").run // <-- index probe
-db.where[Employee](_.salary >= 120_000L).run // <-- range probe
-db.where[Employee](_.name.startsWith("M")).run // <-- prefix probe
-db.where[Employee](e => e.salary > 100_000L && e.salary <= 150_000L).run // <-- between
-db.where[Employee](e => e.name.startsWith("M") && e.name.length > 4).run // <-- probe, then filter
-db.where[Employee](_.name.matches("M.*")).run // <-- scan
+/* index, range and prefix probes */
+db.where[Employee](_.email == "m@x.io").run
+db.where[Employee](_.salary >= 120_000L).run
+db.where[Employee](_.name.startsWith("M")).run
+
+/* a range bounded on both sides */
+db.where[Employee](e => e.salary > 100_000L && e.salary <= 150_000L).run
+
+/* probe on the prefix, then filter */
+db.where[Employee](e => e.name.startsWith("M") && e.name.length > 4).run
+
+/* a scan */
+db.where[Employee](_.name.matches("M.*")).run
 ```
 
-The value index is sorted, so `>`, `>=`, `<`, `<=` (literal on either side) and `startsWith` read just the matching slice. That works on Int, Long, Double,
-BigInt, BigDecimal and String fields. In an `&&`, an equality leaf wins. Failing that, the field with the tightest bounds is probed. The rest of the
+The value index is sorted, so comparisons (literal on either side) and `startsWith` read just the matching slice. That works on numeric and
+string fields. In an `&&`, an equality leaf wins. Failing that, the field with the tightest bounds is probed. The rest of the
 predicate filters the slice, so any predicate stays correct and only the cost changes. `||`, regex and arbitrary code fall back to a scan. The same
-applies to `count`, `exists`, `retractWhere` and `upsertWhere`, and to comparisons in [typed queries](#typed-queries).
+goes for every other method that takes a predicate, and for comparisons in [typed queries](#typed-queries).
 
 Notably (and powerfully), Ref fields are walked inline, even when nested:
 ```scala
@@ -594,27 +597,102 @@ val tdb = Db(
 tdb.where[Tagged](_.tags.contains("fp")).run.map(_.name) // Vector("matt")
 ```
 
+## Pull to shape query results
+Pull is for *shaping* results. The closure picks the fields you want and walks refs to pull sub-shapes, all against a single snapshot. 
+
+This is especially handy when you want a nested output without writing a join, or to skip materializing heavy entities just to read a few fields.
+
+```
+.pull(f) / .pullOne(f)    project rows through Pull[A]
+db.byEid[A](eid)          reconstruct an entity from a raw eid
+db.pullByEid[A](eid)(f)   pull by raw eid
+p.field                   read a single attribute
+p.refField(sub)           nested pull through a card-1 ref
+p.value                   reconstruct the whole entity
+p.reverse[E](_.field)     walk a ref backwards, MultiPull[E]
+```
+
+```scala
+db.where[Employee](_.email == "m@x.io").pullOne(_.dept(_.name))
+// Some("Engineering")
+
+db.where[Employee](_.dept.name == "Engineering").pull(e => (e.email, e.name))
+// Vector(("m@x.io", "Matt"), ("a@x.io", "Alice"))
+```
+
+By eid (from `TxReport.addedEids` or the log):
+
+```scala
+val rep = db.transact(Tx.add(Employee("d@x.io", "Dan", eng, 90_000L)))
+val eid = rep.addedEids.head
+val db2 = rep.dbAfter
+
+db2.byEid[Employee](eid)
+// Some(Employee(...))
+
+db2.pullByEid[Employee](eid)(e => (e.name, e.dept(_.name)))
+// Some(("Dan", "Engineering"))
+```
+
+Both return `None` for missing or wrong-type eids.
+
+### Reverse refs
+Walks a ref backwards from `p` to every `E` pointing at `p`. Card-one or card-many.
+
+```scala
+db.where[Department](_.code == "ENG")
+  .pullOne(d => d.reverse[Employee](_.dept).map(_.name))
+// Some(Vector("Matt", "Alice"))
+```
+
+Nests inside larger pull trees:
+
+```scala
+db.where[Department](_.code == "ENG").pullOne { d =>
+  (d.name, d.reverse[Employee](_.dept).map(e => (e.name, e.skills.map(_.name))))
+}
+// Some((
+//   "Engineering",
+//   Vector(
+//     ("Matt",  Vector("Scala", "Haskell")),
+//     ("Alice", Vector("Scala")),
+//   ),
+// ))
+```
+
+Without `reverse`, a flat query plus regrouping pass is needed, and anyone with empty skills drops to the inner join:
+
+```scala
+val triples = db.query[Department, Employee, Skill] { (d, e, s) =>
+  find(e.name, s.name) where (
+    d.code === "ENG" && e.dept === d && e.skills === s
+  )
+}.run
+// Vector(("Matt", "Scala"), ("Matt", "Haskell"), ("Alice", "Scala"))
+```
+
 ## Queries
-For querying, you have two surfaces: (1/2) for-comprehensions over `where` for plain stitching on a shared scalar, and (2/2) `db.query[...]` for projections, joins, aggregations, windows, and rules with compile-time field checks.
+For querying, you have two surfaces: 
+- (1/2) for-comprehensions over `where` for plain stitching on a shared scalar
+- (2/2) `db.query[...]` for projections, joins, aggregations, windows, and rules with compile-time field checks.
 
 ### For-comprehension joins
 Stitch `where[A]` results together with normal Scala for-comprehensions, no DSL.
 
 ```scala
-val withOrders = db.add(Order("m@x.io", "book", 20L), Order("a@x.io", "lamp", 90L))
-
 (for
-  e <- withOrders.where[Employee]
-  o <- withOrders.where[Order](_.buyer == e.email)
+  e <- db.where[Employee]
+  o <- db.where[Order](_.buyer == e.email)
 yield (e.name, o.item)).run
-// Vector(("Matt", "book"), ("Alice", "lamp"))
+// Vector(("Matt", "book"), ("Matt", "pen"),
+//        ("Alice", "lamp"), ("Bob", "chair"))
 ```
 
 > [!NOTE]
 > Every join here is a nested loop. Reach for `db.query[...]` once you need projections, multi-entity joins, or indexed equality.
 
 ### Typed queries
-The full surface: projections, multi-entity joins, aggregations, windows, rules. Each type parameter binds a row, `find(...)` projects, `where(...)` constrains. Combine with `&&` / `||`, compare with `===`, `!==`, `>`, `<`, `>=`, `<=`. Field access is compile-checked, `where` is optional.
+The full surface: projections, multi-entity joins, aggregations, windows, rules. Each type parameter binds a row, `find(...)` projects, `where(...)` constrains. Combine with `&&` / `||`, compare with `===` / `!==` and the usual ordering operators. Field access is compile-checked, `where` is optional.
 
 ```scala
 db.query[Employee] { e =>
@@ -659,7 +737,8 @@ db.query[Employee, Order] { (e, o) =>
 Typos list available fields at compile time which is nice:
 ```scala
 db.query[Employee] { e => find(e.emial) where (e.email === "x") }
-does not compile: `emial` is not a field of Employee. Available: email, name, dept, salary
+does not compile: `emial` is not a field of Employee.
+Available: email, name, dept, salary, skills, nickname
 ```
 
 Reusable constraints are functions returning `Constraint`:
@@ -686,7 +765,7 @@ val rows = db.query[Employee, Department] { (e, d) =>
 // Vector[NamedTuple[("name","dept","salary"), (String, String, Long)]]
 
 rows.head.name          // "Bob"
-rows.map(_.salary).sum  // 270000L
+rows.map(_.salary).sum  // 380000L
 ```
 
 ```scala
@@ -695,7 +774,7 @@ yield s"$n earns $s"
 ```
 
 ### Aggregations
-**datomlite** comes with built-in "sugar" for `groupBy` + fold over the query rows. Aggregator terms (`count`, `sum`, `avg`, `min`, `max`) sit inside `find(...)`, bare `find` vars become the group keys (no `GROUP BY`), wrong types are compile errors.
+**datomlite** comes with built-in "sugar" for `groupBy` + fold over the query rows. 
 
 ```
 count(t) / countDistinct(t)    Long
@@ -707,7 +786,7 @@ min(t) / max(t)                Ordering[T]
 db.query[Employee, Order] { (e, o) =>
   find(e.name, sum(o.price)) where (e.email === o.buyer)
 }.run
-// Vector(("Matt",20), ("Alice",90), ("Bob",60))
+// Vector(("Matt",25), ("Alice",90), ("Bob",60))
 ```
 
 For one-entity rollups, stay in Scala:
@@ -718,24 +797,18 @@ Query[A].countBy(f)    Map[K, Long]
 ```
 
 ```scala
-val db = Db(
-  Order("m@x.io", "book", 20L),
-  Order("m@x.io", "pen",   5L),
-  Order("a@x.io", "lamp", 90L),
-)
-
 db.where[Order].groupBy(_.buyer).agg(_.map(_.price).sum)
-// Map("m@x.io" -> 25, "a@x.io" -> 90)
+// Map("m@x.io" -> 25, "a@x.io" -> 90, "b@x.io" -> 60)
 
 db.where[Order].countBy(_.buyer)
-// Map("m@x.io" -> 2, "a@x.io" -> 1)
+// Map("m@x.io" -> 2, "a@x.io" -> 1, "b@x.io" -> 1)
 ```
 
 ### Sort and paging
-Order and slice on the `Query` itself, no need to `.run` then `sortBy` in Scala.
+Order and slice on the `Query` itself
 
 ```
-.orderBy(term.asc | term.desc, ...)   typed query, sort keys must be in find(...)
+.orderBy(term.asc | term.desc, ...)   typed query, keys must be in find(...)
 .orderBy(f) / .orderByDesc(f)         where[A] surface, by selector
 .limit(n) / .offset(n)
 ```
@@ -753,174 +826,8 @@ db.where[Employee].orderBy(_.salary).limit(2).run
 db.where[Order].orderByDesc(_.price).offset(10).limit(10).run
 ```
 
-## Pull to shape query results
-Pull is for *shaping* results. The closure picks the fields you want and walks refs to pull sub-shapes, all against a single snapshot. 
-
-This is especially handy when you want a nested output without writing a join, or to skip materializing heavy entities just to read a few fields.
-
-```
-.pull(f) / .pullOne(f)    project rows through Pull[A]
-db.byEid[A](eid)          reconstruct an entity from a raw eid
-db.pullByEid[A](eid)(f)   pull by raw eid
-p.field                   read a single attribute
-p.refField(sub)           nested pull through a card-1 ref
-p.value                   reconstruct the whole entity
-p.reverse[E](_.field)     walk a ref backwards, MultiPull[E]
-```
-
-```scala
-db.where[Employee](_.email == "m@x.io").pullOne(_.dept(_.name))
-// Some("Engineering")
-
-db.where[Employee](_.dept.name == "Engineering").pull(e => (e.email, e.name))
-// Vector(("m@x.io", "Matt"), ("a@x.io", "Alice"))
-```
-
-By eid (from `TxReport.addedEids` or the log):
-
-```scala
-val rep = db.transact(Tx.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), 120_000L)))
-val eid = rep.addedEids.head
-val db2 = rep.dbAfter
-
-db2.byEid[Employee](eid)
-// Some(Employee(...))
-
-db2.pullByEid[Employee](eid)(e => (e.name, e.dept(_.name)))
-// Some(("Matt", "Engineering"))
-```
-
-Both return `None` for missing or wrong-type eids.
-
-### Reverse refs
-Walks a ref backwards from `p` to every `E` pointing at `p`. Card-one or card-many.
-
-```scala
-db.where[Department](_.code == "ENG")
-  .pullOne(d => d.reverse[Employee](_.dept).map(_.name))
-// Some(Vector("Matt", "Alice"))
-```
-
-Nests inside larger pull trees:
-
-```scala
-db.where[Department](_.code == "ENG").pullOne { d =>
-  (d.name, d.reverse[Employee](_.dept).map(e => (e.name, e.skills.map(_.name))))
-}
-// Some((
-//   "Engineering",
-//   Vector(
-//     ("Matt",  Vector("Scala", "Haskell")),
-//     ("Alice", Vector("Scala")),
-//   ),
-// ))
-```
-
-Without `reverse`, a flat query plus regrouping pass is needed, and anyone with empty skills drops to the inner join:
-
-```scala
-val triples = db.query[Department, Employee, Skill] { (d, e, s) =>
-  find(e.name, s.name) where (d.code === "ENG" && e.dept === d && e.skills === s)
-}.run
-// Vector(("Matt", "Scala"), ("Matt", "Haskell"), ("Alice", "Scala"))
-```
-
-## Time travel through past states
-Every `Db` keeps its whole log, so you can read any past state of it. And since writes return a new `Db`, a speculative branch is just a write you
-don't keep.
-
-```
-db.asOf(tx)               rewind to a tx id
-db.asOf(time)             rewind to a Time
-db.asOf("2026-01-15")     takes any ISO-8601
-db.add(...)               a branch, db itself is untouched
-```
-
-```scala
-val eng = Department("ENG", "Engineering")
-
-val rep1 = db.transact(Tx.add(Employee("d@x.io", "Dan", eng, 90_000L)))
-val rep2 = rep1.dbAfter.transact(Tx.add(Employee("f@x.io", "Fay", eng, 95_000L)))
-val now = rep2.dbAfter
-
-now.where[Employee].count                    // 5
-now.asOf(rep1.tx).where[Employee].count      // 4, before Fay
-now.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
-```
-
-ISO-8601 strings accept `Z` or `±HH:MM`, default UTC:
-
-```scala
-now.asOf("2026-01-15").where[Employee].count             // by date
-now.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
-```
-
-What-if:
-```scala
-val whatIf = now.add(Employee("e@x.io", "Eve", eng, 100_000L))
-
-whatIf.where[Employee].count   // 6, includes Eve
-now.where[Employee].count      // 5, untouched
-```
-
-On a `Conn`, `conn.db` is the snapshot: hold on to it and later commits won't touch it.
-
-## History of every entity
-You can call `.log` on any db to get the full history of triples... or `.history`/`.historyOf` to get the history of
-specific entities.
-
-```
-db.log             every datom in tx order
-db.historyOf(a)    trail for the entity currently matching a
-db.history(eid)    trail for an eid, survives retraction
-```
-
-Each datom carries `tx`, `time`, `Op.Assert | Op.Retract` and nothing is overwritten.
-
-```scala
-val eng = Department("ENG", "Engineering")
-
-val rep1 = db.transact(Tx.add(Employee("m@x.io", "Matt", eng, 120_000L)))
-val db2 = rep1.dbAfter
-  .upsert(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
-  .retractWhere[Employee](_.email == "m@x.io")
-
-db2.log
-// every Datom across every tx, with (eid, attr, value, tx, time, op)
-
-db2.historyOf(Employee("m@x.io", "Matthieu", eng, 130_000L, nickname = Some("Matt")))
-// empty, no live entity matches
-
-db2.history(rep1.addedEids.head)
-// full assert/retract trail for that eid
-```
-
-## Diff two databases
-When your database is a value, you can do fun things like diff it against another database, or the same database
-with some speculative transactions that have been applied to it.
-
-`a.diff(b)` returns `DbDiff(added, retracted)` over the live `(eid, attr, value)` triples. Works for any two dbs from the same lineage: before and
-after a write, two branches, or `asOf` views (see [Time travel](#time-travel-through-past-states)).
-
-```scala
-val after = db.upsertWhere[Employee](_.email == "m@x.io")(_.copy(name = "Matthieu"))
-
-val d = db.diff(after)
-d.added.map(_.v)        // Vector("Matthieu")
-d.retracted.map(_.v)    // Vector("Matt")
-```
-
-Or for a what-if:
-
-```scala
-val eng = Department("ENG", "Engineering")
-db.diff(db.add(Employee("e@x.io", "Eve", eng, 100_000L))).added   // datoms Eve would add
-```
-
-A `TxReport` carries both sides, so `rep.dbBefore.diff(rep.dbAfter)` is what one commit changed.
-
 ## Negation as anti-join
-With **datomlite** `not(c)` is the "anti-join". A row passes if and only if substituting it into the negated subgoal produces no matches.
+With **datomlite** `not(c)` is the "anti-join". 
 
 ```scala
 /* employees with no orders */
@@ -929,7 +836,7 @@ db.query[Employee, Order] { (e, o) =>
 }.run
 ```
 
-`not(...)` only sits in the top-level conjunction. No `||`, no `not(not(...))`. Every variable inside `not` must be scoped by the outer positive part (Datalog-safe negation).
+`not(...)` only sits in the top-level conjunction. No `||`, no `not(not(...))`. Every variable inside `not` must be scoped by the outer positive part (i.e. Datalog-safe negation).
 
 ## Existential subgoals (semi-joins)
 
@@ -963,11 +870,11 @@ db.query[Employee, Department] { (e, d) =>
 
 Available functions:
 ```
-rowNumber()                          Long,        1-indexed, needs orderBy
-rank()                               Long,        ties share rank, next rank skips
-denseRank()                          Long,        ties share rank, next rank does not skip
-lag(t, n = 1) / lead(t, n = 1)       Option[T],   None past partition edge
-sum/min/max/avg/count(t).over(spec)  input type,  broadcast over the partition
+rowNumber()                          Long       1-indexed, needs orderBy
+rank()                               Long       ties share rank, then skip
+denseRank()                          Long       ties share rank, no gaps
+lag(t, n = 1) / lead(t, n = 1)       Option[T]  None past the partition edge
+sum/min/max/avg/count(t).over(spec)  as input   broadcast over the partition
 ```
 
 ```scala
@@ -978,13 +885,10 @@ db.query[Employee, Department] { (e, d) =>
 }.run.filter(_._3 == 1L) // top earner per dept
 ```
 
-
 ## Rules
-A `Rule[A, B]` is a named, reusable predicate between two rows, callable inside any `where(...)` as if you'd inlined its body.
+A `Rule[A, B]` is a named, reusable predicate between two rows.
 
-Multiple bodies act as Datalog disjunction (any one holds).
-
-Recursive rules (body references `self`) evaluate to a fixed point.
+Multiple bodies act as Datalog disjunction (any one holds). Recursive rules (body references `self`) evaluate to a fixed point.
 
 ```
 Rule.reaches[A](_.field)              transitive closure of one self-ref field
@@ -994,7 +898,7 @@ rule(src, dst)                        call inside any where(...)
 ```
 
 ### Self-ref closure (`Rule.reaches`)
-"All entities reachable from `src` along one ref field". Walks the AVET edge directly, no fixed-point.
+"All entities reachable from `src` along one ref field". It walks the AVET edge directly, without a fixed-point.
 
 ```scala
 case class Node(
@@ -1016,8 +920,6 @@ db.query[Node, Node] { (s, t) =>
 // Set("a", "b", "c", "d")
 ```
 
-Either side can be bound. With `t.id === "d"` you get every ancestor of `d`. With both unbound, every reachable pair. The field must be a self-ref (`A` or `Set[A]`), a typo or non-ref field is a compile error.
-
 ### Multi-body rules (`Rule[A, B]`)
 Each body is a constraint over the head row params. Multiple bodies act as Datalog disjunction: a pair satisfies the rule if any one body holds.
 
@@ -1035,8 +937,6 @@ db.query[User, Doc] { (u, d) =>
   find(u.email, d.slug) where canRead(u, d)
 }.run
 ```
-
-Same call shape as a recursive rule, no `self` parameter.
 
 ### Recursive rules (`Rule.recursive`)
 The closure receives the rule itself, so a body can call back into it for the recursive case. Evaluation is fixed-point and always terminates over the finite fact domain.
@@ -1153,7 +1053,6 @@ db.query[Place, Place] { (s, t) =>
 ```
 
 #### Undirected graph (Friends)
-Sort endpoints in the key so `Friend(a, b)` == `Friend(b, a)`. `knows` is two bodies (one per orientation), `connected` is the closure. Seven people, six edges, two components:
 
 <p align="center">
   <img src="pix/datomlite-friends.svg" width="500">
@@ -1189,7 +1088,7 @@ val knows: Rule[Person, Person] =
     (x, y) => exists[Friend] { f => f.a === y && f.b === x }
   )
 
-/* `connected` is the closure over `knows`. Same shape as `ancestor`, undirected */
+/* `connected` is the closure over `knows`, like `ancestor` */
 val connected: Rule[Person, Person] =
   Rule.recursive[Person, Person] { self =>
     Seq(
@@ -1213,6 +1112,167 @@ db.query[Person, Person] { (x, y) =>
 // Vector()
 ```
 
+## Time travel through past states
+Every `Db` keeps its whole log, so you can read any past state of it. And since writes return a new `Db`, a speculative branch is just a write you
+don't keep.
+
+```
+db.asOf(tx)               rewind to a tx id
+db.asOf(time)             rewind to a Time
+db.asOf("2026-01-15")     takes any ISO-8601
+db.add(...)               a branch, db itself is untouched
+```
+
+```scala
+val rep1 = db.transact(Tx.add(Employee("d@x.io", "Dan", eng, 90_000L)))
+val db1  = rep1.dbAfter
+val rep2 = db1.transact(Tx.add(Employee("f@x.io", "Fay", eng, 95_000L)))
+val now = rep2.dbAfter
+
+now.where[Employee].count                    // 5
+now.asOf(rep1.tx).where[Employee].count      // 4, before Fay
+now.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
+```
+
+ISO-8601 strings accept `Z` or `±HH:MM`, default UTC:
+
+```scala
+now.asOf("2026-01-15").where[Employee].count             // by date
+now.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
+```
+
+What-if:
+```scala
+val whatIf = now.add(Employee("e@x.io", "Eve", eng, 100_000L))
+
+whatIf.where[Employee].count   // 6, includes Eve
+now.where[Employee].count      // 5, untouched
+```
+
+On a `Conn`, `conn.db` is the snapshot: hold on to it and later commits won't touch it.
+
+## History of every entity
+You can call `.log` on any db to get the full history of triples... or `.history`/`.historyOf` to get the history of
+specific entities.
+
+```
+db.log             every datom in tx order
+db.historyOf(a)    trail for the entity currently matching a
+db.history(eid)    trail for an eid, survives retraction
+```
+
+Each datom carries its tx, its time and whether it was an assert or a retract. Nothing is overwritten.
+
+```scala
+val daniel = Employee("d@x.io", "Daniel", eng, 95_000L, nickname = Some("Dan"))
+
+val rep1 = db.transact(Tx.add(Employee("d@x.io", "Dan", eng, 90_000L)))
+val db2 = rep1.dbAfter
+  .upsert(daniel)
+  .retractWhere[Employee](_.email == "d@x.io")
+
+db2.log
+// every Datom across every tx, with (eid, attr, value, tx, time, op)
+
+db2.historyOf(daniel)
+// empty, no live entity matches
+
+db2.history(rep1.addedEids.head)
+// full assert/retract trail for that eid
+```
+
+## Diff two databases
+When your database is a value, you can do fun things like diff it against another database, or the same database
+with some speculative transactions that have been applied to it.
+
+`a.diff(b)` returns `DbDiff(added, retracted)` over the live `(eid, attr, value)` triples. Works for any two dbs from the same lineage: before and
+after a write, two branches, or `asOf` views (see [Time travel](#time-travel-through-past-states)).
+
+```scala
+val after = db.upsertWhere[Employee](_.email == "m@x.io") {
+  _.copy(name = "Matthieu")
+}
+
+val d = db.diff(after)
+d.added.map(_.v)        // Vector("Matthieu")
+d.retracted.map(_.v)    // Vector("Matt")
+```
+
+Or for a what-if:
+
+```scala
+val withEve = db.add(Employee("e@x.io", "Eve", eng, 100_000L))
+db.diff(withEve).added   // datoms Eve would add
+```
+
+A `TxReport` carries both sides, so `rep.dbBefore.diff(rep.dbAfter)` is what one commit changed.
+
+## Conn: a db that changes
+A `Db` value never changes. When you want one db that a whole app shares and writes to, hold it in a `Conn`. It has the same write verbs as `Db`,
+but they commit in place and return the `TxReport`. `conn.db` is the current value.
+
+```
+Conn()                       in-memory, empty
+Conn(db)                     in-memory, starting from db
+Conn(storage)                replays storage, appends each commit to it
+conn.db                      the db right now, a plain value
+conn.add / upsert / tx ...   commit and return a TxReport
+conn.listen(f)               hear every commit
+conn.watch(q)(f)             live query
+conn.close()                 close the storage
+```
+
+```scala
+val conn = Conn(db)
+conn.add(Order("m@x.io", "book", 20L))
+
+val now = conn.db                 // a value, later commits don't touch it
+now.where[Order].count
+```
+
+## Listen for db changes
+You often want to respond to changes made to your datastore, which is why a `Conn` has `.listen`.
+
+The callback fires after each successful commit with the `TxReport`, so you know exactly what changed. Use it for cache invalidation, outbox pushes, WebSocket fan-out, audit logs, or any side effect that should trail a write.
+
+```scala
+val sub = conn.listen { rep =>
+  println(s"tx ${rep.tx.value}: +${rep.adds.size} -${rep.retracts.size}")
+}
+sub.cancel()
+
+/* a Subscription is AutoCloseable, so Using works too */
+Using.resource(conn.listen(...)) { _ => ... }
+```
+
+- Every commit once, in tx order, even with lots of writers. You only hear commits made after you subscribe.
+- If a listener throws the tx and other listeners are fine. The error goes to `ExecutionContext.defaultReporter`.
+- A listener can write to the conn. It hears that write once the current callback returns.
+- Callbacks run outside the lock but `transact` may wait on them... so keep them quick.
+
+## Watch a query
+`listen` tells you *that* something changed. `watch` tells you *what* your query now returns. It runs the query once up front, then again after each commit
+that could change the result. `f` fires only when the result actually differs from the previous one.
+
+```scala
+def wellPaid(s: Db) = s.where[Employee](_.salary > 100_000L).run.map(_.email)
+
+val sub = conn.watch(wellPaid)(emails => println(emails))
+// prints the current emails now, then again whenever that set changes
+
+conn.watch(_.count[Order])(n => println(s"$n orders"))
+```
+
+- **Dependency tracking.** The query's reads are recorded per entity class, including ref targets it walks into. So a watch over `Employee` re-runs when an
+  `Employee` or its `Department` changes, and skips commits that only touch `Order`s.
+- **Materialized results only.** The query must return a value, not a lazy `Query` or selector, because a lazy result would compare by identity. `.run` it,
+  or `.count` it. The compiler tells you if you forget.
+- Same ordering, isolation and `Subscription` handling as `listen`.
+
+> [!WARNING]
+> Read through the db handed to the query (`_.where...` / `s => s.where...`), not `conn.db` or some other db. Those reads aren't tracked, and they can see
+> a different state than the one being reported.
+
 ## Persistence and custom backends
 Storage is optional: a `Db` lives in memory. Hand a `Storage` to a `Conn` and every commit is appended to it. `FileStorage` ships for JVM and
 Native. Restart with the same path, the log replays.
@@ -1229,7 +1289,7 @@ conn.add(Employee("m@x.io", "Matt", eng, 120_000L))
 /* kill the JVM, restart with the same path */
 val conn2 = Conn(FileStorage(Path.of("db.dlite")))
 conn2.db.where[Employee].one
-// Some(Employee("m@x.io", "Matt", Department("ENG","Engineering"), 120000, Set(), None))
+// Some(Employee("m@x.io", "Matt", ...))
 
 /* or just read it into a value */
 val db = Db.load(FileStorage(Path.of("db.dlite")))
@@ -1240,7 +1300,7 @@ Bring your own backend in two methods (plus an optional `close`):
 ```scala
 trait Storage:
   def load(): Vector[Datom]                 /* once at boot */
-  def append(datoms: Vector[Datom]): Unit   /* each tx, in order, before it becomes visible */
+  def append(datoms: Vector[Datom]): Unit   /* each tx, before it's visible */
   def close(): Unit = ()                    /* on conn.close() */
 ```
 
