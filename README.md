@@ -45,16 +45,14 @@ Try it in your REPL:
 - [How it works](#how-it-works)
 - [FAQ](#faq)
 - [Example schema](#example-schema)
-- Modelling your data
+- [Modelling your data](#keys-and-uniqueness)
   - [Keys and uniqueness](#keys-and-uniqueness)
   - [Refs and cardinality](#refs-and-cardinality)
   - [Optional fields](#optional-fields)
   - [Value types and codecs](#value-types-and-codecs)
-- Writing
-  - [Writes](#writing)
+- [Writing](#writing)
   - [Tx blocks](#tx-blocks-batch-multiple-ops)
-- Reading
-  - [Reads](#reading)
+- [Reading](#reading)
   - [Predicates](#predicates-as-index-probes)
   - [Pull](#pull-to-shape-query-results)
     - [Reverse refs](#reverse-refs)
@@ -71,12 +69,10 @@ Try it in your REPL:
     - [Self-ref closure (`Rule.reaches`)](#self-ref-closure-rulereaches)
     - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
     - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
-- Time travel
-  - [Past states](#time-travel-through-past-states)
+- [Time travel](#time-travel-through-past-states)
   - [History](#history-of-every-entity)
   - [Diff](#diff-two-databases)
-- Conn: a db that changes
-  - [Conn](#conn-a-db-that-changes)
+- [Conn: a db that changes](#conn-a-db-that-changes)
   - [Listen](#listen-for-db-changes)
   - [Watch](#watch-a-query)
   - [Persistence](#persistence-and-custom-backends)
