@@ -23,6 +23,8 @@ import           Test.Tasty.HUnit
 
 import           Datomlite
 
+import           Helpers
+
 -- Records are the schema, refs are just fields
 data Fighter = Fighter { name :: Text, style :: Text, country :: Text }
   deriving (Show, Generic)
@@ -38,12 +40,9 @@ data Bout = Bout
 instance Entity Bout where
   type Identity Bout = '["code"]
 
-ok :: Show e => Either e a -> a
-ok = either (error . show) id
-
 -- A db is a value. One commit, refs point at fighters by name
 db :: Db
-db = ok $ commit_ emptyDb
+db = must $ commit_ emptyDb
   [ Insert (Fighter "Jet Li"         "Wushu"      "China")
   , Insert (Fighter "Gegard Mousasi" "Mixed"      "Netherlands")
   , Insert (Fighter "Rory MacDonald" "Pankration" "Canada")
@@ -92,7 +91,7 @@ book c r b w = do
 
 -- Rory gets his revenge, on a branch we may not keep
 upset :: Db
-upset = ok $ commit_ db (book "B5" "Jet Li" "Rory MacDonald" "Rory MacDonald")
+upset = must $ commit_ db (book "B5" "Jet Li" "Rory MacDonald" "Rory MacDonald")
 
 demoTests :: TestTree
 demoTests = testGroup "Demo (a fight db tour)"
@@ -154,7 +153,7 @@ demoTests = testGroup "Demo (a fight db tour)"
       standings db    @?= [("Jet Li", 3), ("Gegard Mousasi", 1)]
 
   , testCase "upsert keeps refs, time travel and diff see the change" $ do
-      let db' = ok $ commit_ db [Upsert (Fighter "Gegard Mousasi" "Kickboxing" "Netherlands")]
+      let db' = must $ commit_ db [Upsert (Fighter "Gegard Mousasi" "Kickboxing" "Netherlands")]
           gegardStyle d = query d $ do
             b <- matchBy @Bout @"code" "B3"
             w <- follow b.winner
@@ -174,7 +173,8 @@ demoTests = testGroup "Demo (a fight db tour)"
       stop <- watch conn standings (putMVar seen)
       first <- timeout 1000000 (takeMVar seen)
       first @?= Just [("Jet Li", 3), ("Gegard Mousasi", 1)]
-      Right (_, db') <- transact conn (book "B5" "Jet Li" "Rory MacDonald" "Rory MacDonald")
+      (_, db') <- expectRight =<<
+        transact conn (book "B5" "Jet Li" "Rory MacDonald" "Rory MacDonald")
       next <- timeout 1000000 (takeMVar seen)
       next @?= Just (standings db')
       now <- atomically (awaitAfter conn (basisT db))

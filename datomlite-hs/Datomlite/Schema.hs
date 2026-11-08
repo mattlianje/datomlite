@@ -17,7 +17,7 @@
 
 -- Records as the schema. Field types give cardinality and 'Identity' names
 -- the unique fields... a Generic-derived 'Entity' shreds a record into datoms
--- and back
+-- and back.
 module Datomlite.Schema
   ( -- * Field wrappers
     Ref (..)
@@ -74,24 +74,25 @@ module Datomlite.Schema
   , LoadError (..)
   ) where
 
-import           Control.Exception (Exception (..), throw)
-import           Control.Monad  (ap, void)
-import           Data.Foldable  (traverse_)
-import           Data.ByteString (ByteString)
-import           Data.Kind      (Constraint, Type)
-import           Data.List      (nub)
-import           Data.Proxy     (Proxy (..))
-import qualified Data.Map.Strict as Map
-import           Data.Set       (Set)
-import qualified Data.Set       as Set
-import           Data.Text      (Text)
-import qualified Data.Text      as T
-import           Data.Time      (Day, UTCTime (..), getCurrentTime)
-import           Data.Type.Bool (If, type (&&), type (||))
+import           Control.Applicative ((<|>))
+import           Control.Exception   (Exception (..), throw)
+import           Control.Monad       (ap, void)
+import           Data.ByteString     (ByteString)
+import           Data.Foldable       (traverse_)
+import           Data.Kind           (Constraint, Type)
+import           Data.List           (nub)
+import qualified Data.Map.Strict     as Map
+import           Data.Proxy          (Proxy (..))
+import           Data.Set            (Set)
+import qualified Data.Set            as Set
+import           Data.Text           (Text)
+import qualified Data.Text           as T
+import           Data.Time           (Day, UTCTime (..), getCurrentTime)
+import           Data.Type.Bool      (If, type (&&), type (||))
 import           GHC.Generics
-import           GHC.Records    (HasField (..))
-import           GHC.TypeLits   (ErrorMessage (..), KnownSymbol, Symbol, TypeError,
-                                 symbolVal)
+import           GHC.Records         (HasField (..))
+import           GHC.TypeLits        (ErrorMessage (..), KnownSymbol, Symbol, TypeError,
+                                      symbolVal)
 
 import           Datomlite.Core hiding (retract, transact)
 import qualified Datomlite.Core as Core
@@ -209,7 +210,7 @@ instance GEnum f => GEnum (M1 D d f) where
 instance (GEnum f, GEnum g) => GEnum (f :+: g) where
   genumName (L1 x) = genumName x
   genumName (R1 y) = genumName y
-  genumFrom t      = maybe (R1 <$> genumFrom t) (Just . L1) (genumFrom t)
+  genumFrom t      = L1 <$> genumFrom t <|> R1 <$> genumFrom t
 
 instance Constructor c => GEnum (M1 C c U1) where
   genumName _ = T.pack (conName (undefined :: M1 C c U1 p))
@@ -417,16 +418,15 @@ instance (GEntity f, GEntity g) => GEntity (f :*: g) where
   greconstruct n e m     = (:*:) <$> greconstruct n e m <*> greconstruct n e m
 
 instance (Selector s, Field a) => GEntity (M1 S s (K1 i a)) where
-  gdecompose n s@(M1 (K1 x)) =
-    [ (attrName n (selName s), shred x, shape (Proxy @a)) ]
-  greconstruct n =
-    let a = attrName n (selName (undefined :: M1 S s (K1 i a) p))
-    in \e m -> let vs = Map.findWithDefault [] a m
-               in case unshred vs of
-                    Just x  -> Right (M1 (K1 x))
-                    Nothing
-                      | null vs   -> Left (MissingField a e)
-                      | otherwise -> Left (BadValue a vs e)
+  gdecompose n s@(M1 (K1 x)) = [(attrName n (selName s), shred x, shape (Proxy @a))]
+
+  greconstruct n e m = case unshred vs of
+      Just x              -> Right (M1 (K1 x))
+      Nothing | null vs   -> Left (MissingField attr e)
+              | otherwise -> Left (BadValue attr vs e)
+    where
+      attr = attrName n (selName (undefined :: M1 S s (K1 i a) p))
+      vs   = Map.findWithDefault [] attr m
 
 -- | The attribute for a field: @Type\/field@.
 attrName :: Text -> String -> Attr
@@ -437,24 +437,27 @@ fieldsIn :: Entity a => Db -> a -> Either TxError [(Attr, [Value], Shape)]
 fieldsIn db = traverse resolveField . decompose
   where
     resolveField (attr, vs, sh) = (\vs' -> (attr, nub vs', sh)) <$> traverse resolveValue vs
-    resolveValue (VLookup a v) = maybe (Left (UnknownIdentity a v)) (Right . VRef) (uniqueAt a v db)
+    resolveValue (VLookup a v) = VRef <$> holderOf a v db
     resolveValue v             = Right v
 
 -- The entity a ref names, or why there isn't one
 target :: Ref a -> Db -> Either TxError EntityId
 target (Ref e)         _  = Right e
-target (LookupRef a v) db = maybe (Left (UnknownIdentity a v)) Right (uniqueAt a v db)
+target (LookupRef a v) db = holderOf a v db
+
+-- The entity holding an identity value
+holderOf :: Attr -> Value -> Db -> Either TxError EntityId
+holderOf a v db = maybe (Left (UnknownIdentity a v)) Right (uniqueAt a v db)
 
 -- Make entity @e@ match a record's fields: stage only the difference and
 -- claim the identity values it newly holds
 write :: [Attr] -> EntityId -> [(Attr, [Value], Shape)] -> TxState -> TxState
-write ids e fields s = emit ops claims s
+write ids e fields s = emit (retracts ++ asserts) claims s
   where
-    ops = [ (e, attr, v, Retract) | (attr, vs, _) <- fields, v <- current attr, v `notElem` vs ]
-       ++ [ (e, attr, v, Assert) | (attr, vs, _) <- fields, v <- vs, v `notElem` current attr ]
-    claims = [ (attr, v) | (attr, vs, _) <- fields, attr `elem` ids
-                         , v <- vs, v `notElem` current attr ]
-    current attr = lookupValues e attr (txView s)
+    changes  = [ (attr, lookupValues e attr (txView s), new) | (attr, new, _) <- fields ]
+    retracts = [ (e, attr, v, Retract) | (attr, old, new) <- changes, v <- old, v `notElem` new ]
+    asserts  = [ (e, attr, v, Assert)  | (attr, old, new) <- changes, v <- new, v `notElem` old ]
+    claims   = [ (attr, v) | (_, attr, v, _) <- asserts, attr `elem` ids ]
 
 -- | Why a commit failed. Nothing is written.
 data TxError
@@ -644,10 +647,10 @@ instance GSetField name t g => GSetProduct 'False name t f g where
 -- An entity with no facts has nothing to retract. A 'ref' nothing holds fails
 -- with 'UnknownIdentity'.
 retract :: Ref a -> Tx ()
-retract (Ref e) = Tx $ \s ->
-  let ds = [ Core.retract e a v | (a, vs) <- Map.toList (entityAttrs e (txView s)), v <- vs ]
-  in Right ((), emit ds [] s)
-retract r = Tx $ \s -> target r (txView s) >>= \e -> runTx (retract (Ref e)) s
+retract r = Tx $ \s -> do
+  e <- target r (txView s)
+  let facts = [ Core.retract e a v | (a, vs) <- Map.toList (entityAttrs e (txView s)), v <- vs ]
+  pure ((), emit facts [] s)
 
 -- | The database as this transaction sees it so far. Query it to decide what
 -- to write next:
@@ -749,8 +752,8 @@ checkUnique claims db = mapM_ check claims
       _          -> Right ()
 
 -- | 'commit' on a connection: the same writes, the same result and new 'Db'
--- back, and the connection now holds that 'Db'. A 'TxError' or an exception leaves the connection as
--- it was.
+-- back, and the connection now holds that 'Db'. A 'TxError' or an exception
+-- leaves the connection as it was.
 --
 -- @
 -- conn <- connect emptyDb
@@ -903,6 +906,8 @@ loadRecord e db
     prefix = ename (Proxy @a) <> "/"
     own    = Map.filterWithKey (\k _ -> prefix `T.isPrefixOf` k) (entityAttrs e db)
 
+-- | A stored entity that doesn't decode as the record asked for. Thrown by
+-- reads, since it means the data and the record type have drifted apart.
 data LoadError
   = MissingField Attr EntityId
   | BadValue Attr [Value] EntityId

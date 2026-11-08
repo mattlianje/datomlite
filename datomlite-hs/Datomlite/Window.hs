@@ -43,6 +43,7 @@ instance Applicative (Window o r) where
 window :: (Ord p, Ord o) => (r -> p) -> (r -> o) -> Window o r b -> [r] -> [(r, b)]
 window part ord (Window w) rows = concat [ zip (map snd g) (w g) | g <- Map.elems groups ]
   where
+    -- fromListWith conses, so reverse to put each group back in input order
     groups = Map.map (sortBy (comparing fst) . reverse)
                (Map.fromListWith (++) [ (part r, [(ord r, r)]) | r <- rows ])
 
@@ -53,8 +54,8 @@ rowNumber = Window (zipWith const [1 ..])
 -- | Ties share a rank and the next one skips: 1, 1, 3.
 rank :: Eq o => Window o r Int
 rank = Window $ \g ->
-  let ties = group (map fst g)
-  in concat (zipWith replicate (map length ties) (scanl (+) 1 (map length ties)))
+  let sizes = map length (group (map fst g))
+  in concat (zipWith replicate sizes (scanl (+) 1 sizes))
 
 -- | Ties share a rank and the next one doesn't skip: 1, 1, 2.
 denseRank :: Eq o => Window o r Int

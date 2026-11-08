@@ -59,9 +59,9 @@ import           Control.Concurrent.STM (STM, TVar, atomically, check, newTVarIO
 import           Control.Exception (evaluate)
 import           Data.ByteString (ByteString)
 import           Data.List (foldl', sortOn)
-import qualified Data.List.NonEmpty as NE
 import           Data.Map.Strict (Map)
 import qualified Data.Map.Strict as Map
+import           Data.Maybe (listToMaybe)
 import           Data.Set (Set)
 import qualified Data.Set as Set
 import           Data.Text (Text)
@@ -114,8 +114,15 @@ instance Ord Value where
     where
       tag :: Value -> Int
       tag v = case v of
-        VInt _ -> 0; VText _ -> 1; VBool _ -> 2; VRef _ -> 3; VDouble _ -> 4
-        VInteger _ -> 5; VBytes _ -> 6; VInstant _ -> 7; VDay _ -> 8
+        VInt _      -> 0
+        VText _     -> 1
+        VBool _     -> 2
+        VRef _      -> 3
+        VDouble _   -> 4
+        VInteger _  -> 5
+        VBytes _    -> 6
+        VInstant _  -> 7
+        VDay _      -> 8
         VLookup _ _ -> 9
 
 -- A total order on doubles: NaN equals NaN and sorts last
@@ -196,29 +203,24 @@ txInstant = "db/txInstant"
 -- retracting a dead one is a no-op. A tx time goes to 'dbTimes' and not the
 -- indexes... it's about the tx and not an entity
 index :: Db -> Datom -> Db
-index db d
-  | dAttr d == txInstant, VInstant t <- dValue d =
-      db { dbTimes = Map.insert (dTx d) t (dbTimes db) }
-  | otherwise = case dOp d of
-  Assert
-    | live      -> db
-    | otherwise -> db { dbEavt = Map.insertWith (Map.unionWith (flip (++)))
-                                   e (Map.singleton a [d]) (dbEavt db)
-                      , dbAvet = Map.insertWith (Map.unionWith Set.union)
-                                   a (Map.singleton v (Set.singleton e)) (dbAvet db)
-                      }
-  Retract
-    | live      -> db { dbEavt = Map.update (nonEmpty . Map.update dropV a) e (dbEavt db)
-                      , dbAvet = Map.update (nonEmpty . Map.update dropE v) a (dbAvet db)
-                      }
-    | otherwise -> db
+index db d@(Datom e a v tx op)
+  | a == txInstant, VInstant t <- v = db { dbTimes = Map.insert tx t (dbTimes db) }
+  | otherwise = case op of
+      Assert  | not live -> db { dbEavt = addFact (dbEavt db),  dbAvet = addHolder (dbAvet db) }
+      Retract | live     -> db { dbEavt = dropFact (dbEavt db), dbAvet = dropHolder (dbAvet db) }
+      _                  -> db
   where
-    e = dEntity d; a = dAttr d; v = dValue d
-    live = e `Set.member` entitiesWithSet a v db
-    dropV ds = nonEmptyList (filter ((/= v) . dValue) ds)
-    dropE es = let es' = Set.delete e es in if Set.null es' then Nothing else Just es'
-    nonEmpty m = if Map.null m then Nothing else Just m
-    nonEmptyList xs = if null xs then Nothing else Just xs
+    live       = e `Set.member` holders a v db
+    addFact    = Map.insertWith (Map.unionWith (flip (++))) e (Map.singleton a [d])
+    addHolder  = Map.insertWith (Map.unionWith Set.union) a (Map.singleton v (Set.singleton e))
+    dropFact   = Map.update (nonEmpty . Map.update (nonEmpty . filter ((/= v) . dValue)) a) e
+    dropHolder = Map.update (nonEmpty . Map.update (nonEmpty . Set.delete e) v) a
+
+-- Map.update and friends delete a key whose value comes back Nothing
+nonEmpty :: Foldable t => t x -> Maybe (t x)
+nonEmpty xs
+  | null xs   = Nothing
+  | otherwise = Just xs
 
 -- Rebuild a database from a log (newest first). The id counters are kept
 reindex :: [Datom] -> Db -> Db
@@ -325,7 +327,7 @@ fromHistory ds =
 
 -- | The live datoms grouped by entity.
 datoms :: Db -> [Datom]
-datoms db = concatMap concat (Map.elems (Map.map Map.elems (dbEavt db)))
+datoms db = concatMap (concat . Map.elems) (Map.elems (dbEavt db))
 
 -- | An entity's live values by attribute. A many-valued attribute lists its
 -- values in the order they were asserted.
@@ -334,9 +336,7 @@ entityAttrs e db = maybe Map.empty (Map.map (map dValue)) (Map.lookup e (dbEavt 
 
 -- | An entity's value for an attribute.
 lookupValue :: EntityId -> Attr -> Db -> Maybe Value
-lookupValue e a db = case lookupValues e a db of
-  (v:_) -> Just v
-  []    -> Nothing
+lookupValue e a db = listToMaybe (lookupValues e a db)
 
 -- | All of an entity's values for an attribute.
 lookupValues :: EntityId -> Attr -> Db -> [Value]
@@ -344,11 +344,10 @@ lookupValues e a db = Map.findWithDefault [] a (entityAttrs e db)
 
 -- | The entities holding a value for an attribute. An AVET lookup.
 entitiesWith :: Attr -> Value -> Db -> [EntityId]
-entitiesWith a v db = Set.toList (entitiesWithSet a v db)
+entitiesWith a v db = Set.toList (holders a v db)
 
-entitiesWithSet :: Attr -> Value -> Db -> Set EntityId
-entitiesWithSet a v db =
-  maybe Set.empty (Map.findWithDefault Set.empty v) (Map.lookup a (dbAvet db))
+holders :: Attr -> Value -> Db -> Set EntityId
+holders a v db = maybe Set.empty (Map.findWithDefault Set.empty v) (Map.lookup a (dbAvet db))
 
 -- | The entities holding any attribute in a namespace (any @Employee\/…@ for
 -- @"Employee"@). In creation order.
@@ -363,9 +362,7 @@ entitiesInNamespace ns db =
 -- | The entity holding a value for an attribute. Meant for unique attributes
 -- where there's at most one.
 uniqueAt :: Attr -> Value -> Db -> Maybe EntityId
-uniqueAt a v db = case entitiesWith a v db of
-  (e:_) -> Just e
-  []    -> Nothing
+uniqueAt a v db = Set.lookupMin (holders a v db)
 
 -- | A connection: the current 'Db' in a 'TVar' for readers and a lock writers
 -- take turns on.
@@ -409,10 +406,9 @@ awaitAfter (Conn v _) t = do
 -- | One 'TxReport' per transaction after the given one (oldest first). An empty
 -- transaction gets an empty report.
 txsAfter :: TxId -> Db -> [TxReport]
-txsAfter t@(TxId from) db =
-  [ TxReport (TxId i) (txTime (TxId i) db) (Map.findWithDefault [] (TxId i) byTx)
-  | i <- [from + 1 .. to] ]
+txsAfter t@(TxId from) db = [ report (TxId i) | i <- [from + 1 .. to] ]
   where
-    TxId to = dbBasis db
-    byTx = Map.fromList [ (dTx (NE.head g), NE.toList g) | g <- NE.groupWith dTx newer ]
-    newer = reverse (takeWhile ((> t) . dTx) (dbLog db))
+    TxId to   = dbBasis db
+    report tx = TxReport tx (txTime tx db) (Map.findWithDefault [] tx byTx)
+    -- walking the newest-first log and prepending puts each tx's datoms back in order
+    byTx = Map.fromListWith (++) [ (dTx d, [d]) | d <- takeWhile ((> t) . dTx) (dbLog db) ]

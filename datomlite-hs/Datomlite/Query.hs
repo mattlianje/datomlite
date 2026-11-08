@@ -9,9 +9,8 @@
 {-# LANGUAGE TypeOperators          #-}
 {-# LANGUAGE UndecidableInstances   #-}
 
--- Queries are a list monad over a fixed 'Db'
--- 'match' scans and 'guard' -- filters...
--- 'follow' and 'matchBy' look the entity up directly
+-- Queries are a list monad over a fixed 'Db'. 'match' scans, 'guard'
+-- filters, and 'follow' and 'matchBy' look the entity up directly.
 module Datomlite.Query
   ( -- * The query monad
     Query
@@ -27,18 +26,18 @@ module Datomlite.Query
   , none
   ) where
 
-import  Control.Applicative (Alternative (..))
-import  Control.Monad       (MonadPlus, ap)
-import  Data.Foldable       (toList)
-import  Data.Proxy          (Proxy (..))
-import  Data.Sequence       (Seq (..), (><))
-import qualified Data.Sequence as Seq
-import qualified Data.Set   as Set
-import  GHC.Records         (HasField)
-import  GHC.TypeLits        (KnownSymbol, symbolVal)
+import           Control.Applicative (Alternative (..))
+import           Control.Monad       (MonadPlus, ap)
+import           Data.Foldable       (toList)
+import           Data.Proxy          (Proxy (..))
+import           Data.Sequence       (Seq (..), (><))
+import qualified Data.Sequence       as Seq
+import qualified Data.Set            as Set
+import           GHC.Records         (HasField)
+import           GHC.TypeLits        (KnownSymbol, symbolVal)
 
-import  Datomlite.Core
-import  Datomlite.Schema
+import           Datomlite.Core
+import           Datomlite.Schema
 
 -- | Each bind ranges over candidates and 'Control.Monad.guard' prunes them.
 -- A failed pattern match (@Just n <- pure e.nick@) drops the candidate too.
@@ -89,12 +88,14 @@ matchBy
      , ToValue (FieldValue t) )
   => FieldValue t -> Query (Stored a)
 matchBy v = Query $ \db ->
-  [ s | w <- resolved db (toValue v), e <- entitiesWith attr w db, Just s <- [load (Ref e) db] ]
+  [ s | w <- resolve db (toValue v)
+      , e <- entitiesWith attr w db
+      , Just s <- [load (Ref e) db] ]
   where
     attr = attrName (ename (Proxy @a)) (symbolVal (Proxy @name))
-    -- a lookup ref matches the entity it names (or nothing)
-    resolved db (VLookup a w) = maybe [] (pure . VRef) (uniqueAt a w db)
-    resolved _  w             = [w]
+    -- a lookup ref matches the entity it names, or nothing
+    resolve db (VLookup a w) = maybe [] (pure . VRef) (uniqueAt a w db)
+    resolve _  w             = [w]
 
 -- | Walk a 'Ref' to its entity (or to nothing if it was retracted). The cheap
 -- join: @d <- follow e.dept@. A lookup ref works too:
@@ -121,11 +122,12 @@ oneOf xs = Query (const (toList xs))
 -- Breadth first, nearest first. Lazy so 'exists' stops at the first hit.
 closure :: (Stored a -> Query (Stored a)) -> Stored a -> Query (Stored a)
 closure step x = Query $ \db ->
-  let go _ Empty = []
-      go seen (v :<| vs)
-        | refOf v `Set.member` seen = go seen vs
-        | otherwise = v : go (Set.insert (refOf v) seen) (vs >< Seq.fromList (runQ (step v) db))
-  in go Set.empty (Seq.fromList (runQ (step x) db))
+  let next v = Seq.fromList (runQ (step v) db)
+      go _ Empty = []
+      go seen (v :<| queue)
+        | refOf v `Set.member` seen = go seen queue
+        | otherwise                 = v : go (Set.insert (refOf v) seen) (queue >< next v)
+  in go Set.empty (next x)
 
 -- | Keep the row if the subquery has a result (a semi-join). It runs against
 -- the same 'Db' as the query around it:

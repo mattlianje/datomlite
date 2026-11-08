@@ -1,27 +1,27 @@
 -- Reacting to commits.
 --
--- A subscriber is a thread that blocks until the basis
--- moves, then catches up from the log... Writers never wait on subscribers and
--- a slow callback only holds up its own thread
+-- A subscriber is a thread that blocks until the basis moves, then catches up
+-- from the log... Writers never wait on subscribers and a slow callback only
+-- holds up its own thread.
 module Datomlite.Watch
   ( listen
   , watch
   ) where
 
-import Control.Concurrent     (forkIO)
-import Control.Concurrent.STM (atomically, check, newTVarIO, orElse, readTVar,
-                               readTVarIO, writeTVar)
-import Control.Exception      (SomeAsyncException, SomeException, catch,
-                               displayException, evaluate, fromException, throwIO)
-import Control.Monad          (forM_, unless, when)
-import qualified Data.ByteString    as BS
-import Data.IORef             (newIORef, readIORef, writeIORef)
-import Data.Maybe             (isJust)
-import qualified Data.Text          as T
-import qualified Data.Text.Encoding as T
-import System.IO              (stderr)
+import           Control.Concurrent     (forkIO)
+import           Control.Concurrent.STM (atomically, check, newTVarIO, orElse, readTVar,
+                                         readTVarIO, writeTVar)
+import           Control.Exception      (SomeAsyncException, SomeException, catch,
+                                         displayException, evaluate, fromException, throwIO)
+import           Control.Monad          (forM_, unless, when)
+import qualified Data.ByteString        as BS
+import           Data.IORef             (newIORef, readIORef, writeIORef)
+import           Data.Maybe             (isJust)
+import qualified Data.Text              as T
+import qualified Data.Text.Encoding     as T
+import           System.IO              (stderr)
 
-import Datomlite.Core
+import           Datomlite.Core
 
 -- | Call @f@ with every commit from now on, in tx order.
 --
@@ -49,13 +49,14 @@ listen conn f = subscribe conn (const []) (\seen db -> map f (txsAfter seen db))
 watch :: Eq a => Conn -> (Db -> a) -> (a -> IO ()) -> IO (IO ())
 watch conn q f = do
   lastSeen <- newIORef Nothing   -- only the watch's own thread touches it
-  let run db = [ do r    <- evaluate (q db)
-                    prev <- readIORef lastSeen
-                    when (prev /= Just r) (writeIORef lastSeen (Just r) >> f r) ]
-  subscribe conn run (const run)
+  let notify db = do
+        r    <- evaluate (q db)
+        prev <- readIORef lastSeen
+        when (prev /= Just r) $ writeIORef lastSeen (Just r) >> f r
+  subscribe conn (\db -> [notify db]) (\_ db -> [notify db])
 
 -- Fork a thread that runs @start@ on the current 'Db', then @step@ on each
--- newer one... until stopped. The start is read before returning... so no later
+-- newer one... until stopped. The start is read before returning, so no later
 -- commit is missed
 subscribe :: Conn -> (Db -> [IO ()]) -> (TxId -> Db -> [IO ()]) -> IO (IO ())
 subscribe conn start step = do
