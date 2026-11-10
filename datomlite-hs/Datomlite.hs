@@ -926,9 +926,9 @@ data TxError
 -- database. Small 'Tx's compose into bigger ones (it's a 'Monad' and a
 -- 'Monoid' when the result is).
 --
--- Under the hood it's the 'Db' being written (every step staged under one
--- pending tx) plus the identity claims to check on commit. Ids are handed out as
--- you go... so a tempid is just a real 'EntityId'.
+-- Inside it's the 'Db' being written (every step staged under one
+-- pending tx) and the identity claims to check on commit. Ids get handed out
+-- as you go... so a tempid is just a real 'EntityId'.
 newtype Tx a = Tx { runTx :: TxState -> Either TxError (a, TxState) }
 
 data TxState = TxState
