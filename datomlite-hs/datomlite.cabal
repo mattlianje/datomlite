@@ -26,12 +26,6 @@ source-repository head
 
 library
   exposed-modules:     Datomlite
-                       Datomlite.Raw
-  other-modules:       Datomlite.Core
-                       Datomlite.Schema
-                       Datomlite.Query
-                       Datomlite.Watch
-                       Datomlite.Window
   build-depends:       base >= 4.7 && < 5
                      , text >= 2.1.2 && < 2.2
                      , containers >= 0.5 && < 0.9

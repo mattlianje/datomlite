@@ -1067,10 +1067,9 @@ Just carol = refOf <$> find @Employee "c@x.io" db2
 -- , ... ]
 ```
 
-To skip the schema, import `Datomlite.Raw`: stringly-typed `transact` and
-`assert`/`retract`, plus index probes like `lookupValue` and `entitiesWith`. Raw
-writes skip type and uniqueness checks. Import it qualified, since its
-`transact` and `retract` clash with the main ones.
+Under the records it's all plain data. `datoms` and `history` hand back every
+fact as a `Datom`, and `fromHistory` builds a `Db` from datoms, even ones you
+made by hand. Those skip the type and uniqueness checks a commit does.
 
 ## Diff two databases
 Two db values diff like two lists. An unchanged fact is the same `Datom` in
@@ -1187,7 +1186,7 @@ A restored db picks up where the old one stopped: same entities, same past for
   the last commits. If each commit must be on disk before you move on, append
   `trDatoms` yourself after `transact` returns.
 - **`Show` is simple, not fast.** For a big log, write your own encoding. Every
-  `Datom`, `Value` and id constructor is exported (ids from `Datomlite.Raw`).
+  `Datom`, `Value` and id constructor is exported.
 
 ## Sharing the db across threads
 `Db` is a plain value, so pass it anywhere. The `db` you get back from

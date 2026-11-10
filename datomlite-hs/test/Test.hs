@@ -19,7 +19,6 @@ import qualified Data.ByteString        as BS
 import           Data.List              (sort)
 import           Data.Maybe             (isJust)
 import           Data.Ord               (Down (..))
-import           Data.Proxy             (Proxy (..))
 import           Data.Set               (Set)
 import qualified Data.Set               as Set
 import           Data.String            (fromString)
@@ -32,8 +31,6 @@ import           Test.Tasty
 import           Test.Tasty.HUnit hiding (assert)
 
 import           Datomlite
-import           Datomlite.Raw hiding (retract, transact)
-import qualified Datomlite.Raw as Raw
 
 import           Demo             (demoTests)
 import           Helpers
@@ -178,40 +175,42 @@ coreTests = testGroup "Core (EAV log)"
 
   , testCase "asOf hides later transactions" $ do
       let db = rawTx [assert e "b" (VText "two")] (rawTx [assert e "a" (VText "one")] emptyDb)
-      lookupValue e "b" (asOf (TxId 1) db) @?= Nothing
-      lookupValue e "a" (asOf (TxId 1) db) @?= Just (VText "one")
+      valuesOf e "b" (asOf (TxId 1) db) @?= []
+      valuesOf e "a" (asOf (TxId 1) db) @?= [VText "one"]
 
   , testCase "retraction removes a fact" $ do
       let db1 = rawTx [assert e "a" (VText "one")] emptyDb
-          db2 = rawTx [Raw.retract e "a" (VText "one")] db1
-      lookupValue e "a" db2 @?= Nothing
+          db2 = rawTx [retractFact e "a" (VText "one")] db1
+      valuesOf e "a" db2 @?= []
 
-  , testCase "entitiesWith follows asserts and retracts" $ do
+  , testCase "who holds a value follows asserts and retracts" $ do
       let (a, b) = (EntityId 1, EntityId 2)
           db1 = rawTx [assert a "k" (VInt 7), assert b "k" (VInt 7)] emptyDb
-          db2 = rawTx [Raw.retract a "k" (VInt 7)] db1
-      entitiesWith "k" (VInt 7) db1 @?= [a, b]
-      entitiesWith "k" (VInt 7) db2 @?= [b]
-      entitiesWith "k" (VInt 7) (asOf (TxId 1) db2) @?= [a, b]
+          db2 = rawTx [retractFact a "k" (VInt 7)] db1
+      holdersOf "k" (VInt 7) db1 @?= [a, b]
+      holdersOf "k" (VInt 7) db2 @?= [b]
+      holdersOf "k" (VInt 7) (asOf (TxId 1) db2) @?= [a, b]
 
   , testCase "a fact asserted twice is one fact" $ do
       let db1 = rawTx [assert e "a" (VInt 1), assert e "a" (VInt 1)] emptyDb
-          db2 = rawTx [Raw.retract e "a" (VInt 1)] db1
-      lookupValues e "a" db1 @?= [VInt 1]
-      lookupValues e "a" db2 @?= []
+          db2 = rawTx [retractFact e "a" (VInt 1)] db1
+      valuesOf e "a" db1 @?= [VInt 1]
+      valuesOf e "a" db2 @?= []
 
   , testCase "many values keep the order they were asserted in" $ do
       let db1 = rawTx [assert e "a" (VInt 3), assert e "a" (VInt 1)] emptyDb
           db2 = rawTx [assert e "a" (VInt 2)] db1
-      lookupValues e "a" db2 @?= [VInt 3, VInt 1, VInt 2]
+      valuesOf e "a" db2 @?= [VInt 3, VInt 1, VInt 2]
 
-  , testCase "entitiesInNamespace matches the exact prefix" $ do
-      let db = rawTx [ assert (EntityId 3) "Dept/x"         (VInt 1)
-                     , assert (EntityId 2) "Department/x"   (VInt 1)
-                     , assert (EntityId 1) "Department/y"   (VInt 1)
-                     , assert (EntityId 4) "Departmental/x" (VInt 1)
+  , testCase "every matches the type name exactly, not as a prefix" $ do
+      let db = rawTx [ assert (EntityId 3) "Dept/code"           (VText "D")
+                     , assert (EntityId 2) "Department/code"     (VText "SAL")
+                     , assert (EntityId 2) "Department/deptName" (VText "Sales")
+                     , assert (EntityId 1) "Department/code"     (VText "ENG")
+                     , assert (EntityId 1) "Department/deptName" (VText "Engineering")
+                     , assert (EntityId 4) "Departmental/code"   (VText "X")
                      ] emptyDb
-      entitiesInNamespace "Department" db @?= [EntityId 1, EntityId 2]
+      map (refId . refOf) (every @Department db) @?= [EntityId 1, EntityId 2]
   ]
   where
     e = EntityId 1
@@ -223,9 +222,13 @@ schemaTests = testGroup "Schema (records are the schema)"
       (dRef, db) <- expectRight $ commit emptyDb (insert d)
       loadR dRef db @?= Just d
 
-  , testCase "Identity fields become attributes, and default to none" $ do
-      identityAttrs (Proxy @Account) @?= ["Account/handle", "Account/mail"]
-      identityAttrs (Proxy @Road)    @?= []
+  , testCase "each Identity field is unique on its own, and there are none by default" $ do
+      db <- expectRight $ commit_ emptyDb [Insert (Account "max" "m@x.io")]
+      case commit_ db [Insert (Account "maxi" "m@x.io")] of
+        Left (UniqueViolation a _ _) -> a @?= "Account/mail"
+        other                        -> assertFailure (show (fmap basisT other))
+      notes <- expectRight $ commit_ emptyDb [Insert (Note (Just "hi")), Insert (Note (Just "hi"))]
+      length (every @Note notes) @?= 2
 
   , testCase "retract removes every fact of an entity" $ do
       (dRef, db1) <- expectRight $ commit emptyDb (insert (Department "ENG" "Engineering"))
@@ -236,7 +239,8 @@ schemaTests = testGroup "Schema (records are the schema)"
 
   , testCase "attribute names are Type/field prefixed" $ do
       let d = Department "ENG" "Engineering"
-      sort (entityFields d) @?= ["Department/code", "Department/deptName"]
+      db <- expectRight $ commit_ emptyDb [Insert d]
+      sort (map dAttr (datoms db)) @?= ["Department/code", "Department/deptName"]
 
   , testCase "Tx do-block: tempid ref used in a later entity" $ do
       let txn = do
@@ -326,14 +330,14 @@ valueTests = testGroup "Value types"
 
   , testCase "an enum is stored as its constructor's name, and matches by value" $ do
       (r, db) <- expectRight $ commit emptyDb (insert reading)
-      lookupValue (refId r) "Reading/level" db @?= Just (VText "High")
+      valuesOf (refId r) "Reading/level" db @?= [VText "High"]
       map refOf (query db (matchBy @Reading @"level" High)) @?= [r]
       map refOf (query db (matchBy @Reading @"levels" Low)) @?= [r]
       map refOf (query db (matchBy @Reading @"level" Low))  @?= []
 
   , testCase "an enum constructor that no longer exists throws BadValue" $ do
       (r, db1) <- expectRight $ commit emptyDb (insert reading)
-      let db2 = rawTx [ Raw.retract (refId r) "Reading/level" (VText "High")
+      let db2 = rawTx [ retractFact (refId r) "Reading/level" (VText "High")
                       , assert      (refId r) "Reading/level" (VText "Medium")
                       ] db1
       res <- try (evaluate (loadR r db2))
@@ -343,10 +347,10 @@ valueTests = testGroup "Value types"
       let nan = 0 / 0 :: Double
       (r, db1) <- expectRight $ commit emptyDb (insert reading { celsius = nan })
       fmap (isNaN . celsius) (loadR r db1) @?= Just True
-      entitiesWith "Reading/celsius" (VDouble nan) db1 @?= [refId r]
+      map refOf (query db1 (matchBy @Reading @"celsius" nan)) @?= [r]
       db2 <- expectRight $ commit_ db1 (update r (\x -> x { celsius = 1.5 }))
       fmap celsius (loadR r db2) @?= Just 1.5
-      entitiesWith "Reading/celsius" (VDouble nan) db2 @?= []
+      map refOf (query db2 (matchBy @Reading @"celsius" nan)) @?= []
 
   , testCase "a time with a bottom inside fails its commit" $ do
       let bad = reading { takenAt = UTCTime (fromGregorian 2026 10 13) (error "boom") }
@@ -397,7 +401,7 @@ updateTests = testGroup "update (record-update syntax)"
         insert (Employee "m@x.io" "Max" Nothing eng mempty)
       db2 <- expectRight $ commit_ db1 (update mx (\e -> e { name = "Maximilian" }))
       (name <$> loadR mx db2) @?= Just "Maximilian"
-      lookupValues (refId mx) "Employee/name" db2 @?= [VText "Maximilian"]
+      valuesOf (refId mx) "Employee/name" db2 @?= [VText "Maximilian"]
       (name <$> loadR mx db1) @?= Just "Max"
 
   , testCase "Maybe and Set fields: values come and go" $ do
@@ -447,7 +451,7 @@ upsertTests = testGroup "upsert (by Identity)"
       eng' @?= eng
       (deptName <$> loadR eng db2) @?= Just "Platform"
       length (every @Department db2) @?= 1
-      lookupValues (refId eng) "Department/deptName" db2 @?= [VText "Platform"]
+      valuesOf (refId eng) "Department/deptName" db2 @?= [VText "Platform"]
       query db2 (do e <- follow mx; d <- follow e.dept; pure d.deptName) @?= ["Platform"]
 
   , testCase "saving an unchanged record writes nothing" $ do
@@ -694,7 +698,7 @@ lookupTests = testGroup "Reads and lookups (Stored, every, find, ref)"
         mx <- insert (Employee "m@x.io" "Max" Nothing d (Set.fromList [hs, ref @Skill "haskell"]))
         pure (hs, mx)
       ((.skills) <$> load mx db) @?= Just (Set.singleton hs)
-      length (lookupValues (refId mx) "Employee/skills" db) @?= 1
+      length (valuesOf (refId mx) "Employee/skills" db) @?= 1
   ]
 
 writeListTests :: TestTree
@@ -1050,9 +1054,23 @@ expectBoom act = do
     Left (ErrorCall msg) -> msg @?= "boom"
     Right _              -> assertFailure "expected it to throw, but it returned"
 
--- A raw transaction, keeping just the new db
-rawTx :: TxData -> Db -> Db
-rawTx ops = snd . Raw.transact ops
+-- Facts written straight into the log as one more transaction, for states the
+-- typed API won't make: data from an older schema, say
+rawTx :: [(EntityId, Attr, Value, Op)] -> Db -> Db
+rawTx facts db = fromHistory (history db ++ [ Datom e a v next op | (e, a, v, op) <- facts ])
+  where next = case basisT db of TxId n -> TxId (n + 1)
+
+assert, retractFact :: EntityId -> Attr -> Value -> (EntityId, Attr, Value, Op)
+assert e a v      = (e, a, v, Assert)
+retractFact e a v = (e, a, v, Retract)
+
+-- An entity's live values for an attribute, oldest first
+valuesOf :: EntityId -> Attr -> Db -> [Value]
+valuesOf e a db = [ dValue d | d <- datoms db, dEntity d == e, dAttr d == a ]
+
+-- The entities holding a value for an attribute
+holdersOf :: Attr -> Value -> Db -> [EntityId]
+holdersOf a v db = [ dEntity d | d <- datoms db, dAttr d == a, dValue d == v ]
 
 -- The plain record behind a ref
 loadR :: Entity a => Ref a -> Db -> Maybe a

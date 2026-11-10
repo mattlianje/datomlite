@@ -22,4 +22,4 @@ Initial release.
 - `fromHistory` rebuilds a `Db` from its datoms. `show` / `read` round-trips a datom per line
 - `Conn` for the IO side. `transact` is `commit` on a `Conn` and hands back the same result and new `Db`. `snapshot` reads what it holds now
 - `listen` and `watch`. Each subscriber gets its own thread so writers never wait on it
-- `Datomlite.Raw` for going around the schema
+- The whole library is one module in one file, `Datomlite.hs`, so it can be vendored by copying it
