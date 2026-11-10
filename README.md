@@ -517,11 +517,11 @@ tx, time, adds, retracts, addedEids, datoms, dbBefore, dbAfter
 `Query[A]` is the lazy `Iterable[A]` that `db.where[A]` returns. You materialize it with `.run` (`toVector`) or `.one` (`headOption`).
 
 ```
-db.where[A]                  Query[A] over all rows of A
-db.where[A](pred)            Query[A] filtered, probes the index where it can
-db.exists[A](pred)           Boolean, short-circuits
-db.count[A](pred)            Long, no row materialization
-.run / .one                  materialize to Vector / Option
+db.where[A]             Query[A] over all rows of A
+db.where[A](pred)       Query[A] filtered, probes the index where it can
+db.exists[A](pred)      Boolean, short-circuits
+db.count[A](pred)       Long, no row materialization
+.run / .one             materialize to Vector / Option
 ```
 
 ```scala
@@ -532,9 +532,9 @@ db.where[Employee](_.name.startsWith("M")).run    // Vector[Employee]
 db.where[Employee](_.salary >= 120_000L).run      // Vector[Employee]
 
 /* Quick checks */
-db.exists[Employee](_.email == "m@x.io")        // true
-db.count[Employee](_.name.startsWith("M"))      // 1
-db.count[Employee]                              // 3
+db.exists[Employee](_.email == "m@x.io")  // true
+db.count[Employee](_.name.startsWith("M"))  // 1
+db.count[Employee]  // 3
 
 /* Still feels like a collection */
 db.where[Employee].toList
@@ -731,8 +731,8 @@ db.query[Employee, Order] { (e, o) =>
 Typos list available fields at compile time which is nice:
 ```scala
 db.query[Employee] { e => find(e.emial) where (e.email === "x") }
-does not compile: `emial` is not a field of Employee.
-Available: email, name, dept, salary, skills, nickname
+// does not compile: `emial` is not a field of Employee.
+// Available: email, name, dept, salary, skills, nickname
 ```
 
 Reusable constraints are functions returning `Constraint`:
@@ -1123,24 +1123,25 @@ val db1  = rep1.dbAfter
 val rep2 = db1.transact(Tx.add(Employee("f@x.io", "Fay", eng, 95_000L)))
 val now = rep2.dbAfter
 
-now.where[Employee].count                    // 5
-now.asOf(rep1.tx).where[Employee].count      // 4, before Fay
-now.asOf(rep2.time).where[Employee].count    // 5, by wall-clock
+now.where[Employee].count
+now.asOf(rep1.tx).where[Employee].count     /* 4, before Fay */
+now.asOf(rep2.time).where[Employee].count   /* 5, by wall-clock */
 ```
 
-ISO-8601 strings accept `Z` or `±HH:MM`, default UTC:
+ISO-8601 strings accept `Z` or `±HH:MM`, default UTC. You
+can toss in date or instant Strings.
 
 ```scala
-now.asOf("2026-01-15").where[Employee].count             // by date
-now.asOf("2026-01-15T10:30:00Z").where[Employee].count   // by instant
+now.asOf("2026-01-15").where[Employee].count
+now.asOf("2026-01-15T10:30:00Z").where[Employee].count
 ```
 
 What-if:
 ```scala
 val whatIf = now.add(Employee("e@x.io", "Eve", eng, 100_000L))
 
-whatIf.where[Employee].count   // 6, includes Eve
-now.where[Employee].count      // 5, untouched
+whatIf.where[Employee].count   /* 6, includes Eve */
+now.where[Employee].count      /* 5, untouched */
 ```
 
 On a `Conn`, `conn.db` is the snapshot: hold on to it and later commits won't touch it.
@@ -1188,15 +1189,15 @@ val after = db.upsertWhere[Employee](_.email == "m@x.io") {
 }
 
 val d = db.diff(after)
-d.added.map(_.v)        // Vector("Matthieu")
-d.retracted.map(_.v)    // Vector("Matt")
+d.added.map(_.v)        /* Vector("Matthieu") */
+d.retracted.map(_.v)    /* Vector("Matt") */
 ```
 
 Or for a what-if:
 
 ```scala
 val withEve = db.add(Employee("e@x.io", "Eve", eng, 100_000L))
-db.diff(withEve).added   // datoms Eve would add
+db.diff(withEve).added   /* datoms Eve would add */
 ```
 
 A `TxReport` carries both sides, so `rep.dbBefore.diff(rep.dbAfter)` is what one commit changed.
@@ -1220,7 +1221,7 @@ conn.close()                 close the storage
 val conn = Conn(db)
 conn.add(Order("m@x.io", "book", 20L))
 
-val now = conn.db                 // a value, later commits don't touch it
+val now = conn.db /* a val, later commits don't touch it */
 now.where[Order].count
 ```
 
@@ -1331,10 +1332,6 @@ Print the live state or the raw log to stdout.
 db.pretty                 live state grouped by entity class
 db.prettyLog(color)       tab-aligned log: tx | time | eid | attr | value | op
 ```
-
-<p align="center">
-  <img src="pix/datomlite-pretty.png" width="500">
-</p>
 
 ## Build / Contribute
 Scala, Mill and a JVM. PRs welcome, please keep it zero-dep.
