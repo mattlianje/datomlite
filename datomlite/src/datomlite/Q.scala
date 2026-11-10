@@ -117,12 +117,14 @@ private[datomlite] object Q {
     case "count"          => values.size.toLong
     case "count-distinct" => values.toSet.size.toLong
     case "sum"            => sumOf(values)
-    case "min" => values.min(using Ordering.fromLessThan((a, b) => Compare.any(a, b) < 0))
-    case "max" => values.max(using Ordering.fromLessThan((a, b) => Compare.any(a, b) < 0))
+    case "min"            => values.min(using byValue)
+    case "max"            => values.max(using byValue)
     case "avg" =>
       if values.isEmpty then 0.0 else values.map(toDouble).sum / values.size
     case other => sys.error(s"unknown aggregation: $other")
   }
+
+  private val byValue: Ordering[Any] = Compare.any(_, _)
 
   private def sumOf(values: Vector[Any]): Any =
     if values.isEmpty then 0L

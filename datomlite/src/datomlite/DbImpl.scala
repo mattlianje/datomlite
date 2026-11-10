@@ -102,7 +102,7 @@ private[datomlite] object DbImpl {
 
       val attrsAsSets: Map[String, Set[Any]] = State.collapseToSets(flat)
 
-      s.findExisting(entity, attrsAsSets) match {
+      s.findExisting(entity.name, attrsAsSets) match {
         case Some(eid) => (s, eid)
         case None =>
           val live = s.eidByClass.getOrElse(entity.name, Set.empty)
@@ -169,7 +169,7 @@ private[datomlite] object DbImpl {
         case None => this
         case Some(flat) =>
           val attrsAsSets = State.collapseToSets(flat)
-          findExisting(entity, attrsAsSets) match {
+          findExisting(entity.name, attrsAsSets) match {
             case None => this
             case Some(eid) =>
               val datoms = flat.map((a, vv) => Datom(eid, a, vv, tx, time, Op.Retract))
@@ -186,11 +186,8 @@ private[datomlite] object DbImpl {
       }
     }
 
-    private[DbImpl] def findExisting(
-        entity: Entity[Any],
-        attrs: Map[String, Set[Any]]
-    ): Option[Eid] =
-      eidByClass.getOrElse(entity.name, Set.empty).find(eid => eavt.get(eid).contains(attrs))
+    private[DbImpl] def findExisting(className: String, attrs: Map[String, Set[Any]]): Option[Eid] =
+      eidByClass.getOrElse(className, Set.empty).find(eid => eavt.get(eid).contains(attrs))
 
     private def byValue(attr: String): TreeMap[Any, Set[Eid]] =
       avet.getOrElse(attr, State.noValues)
@@ -344,7 +341,7 @@ private[datomlite] object DbImpl {
     */
   private def findEidFor(state: State, entity: Entity[Any], value: Any): Option[Eid] =
     flattenForLookup(state, entity, value).flatMap { flat =>
-      state.findExisting(entity, State.collapseToSets(flat))
+      state.findExisting(entity.name, State.collapseToSets(flat))
     }
 
   /** Decompose `value` into its flat (attr, value) pairs against `state` for read-only lookup.

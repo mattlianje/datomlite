@@ -1,6 +1,7 @@
 package datomlite
 
 import java.nio.charset.StandardCharsets
+import scala.annotation.tailrec
 import java.nio.file.{Files, Path, StandardOpenOption}
 
 /** Append-only file backend for `Storage`. One datom per line, tab-separated, UTF-8. Writes are
@@ -133,17 +134,15 @@ object FileStorage {
     }.mkString
 
   private def decodeElems(s: String): Vector[Any] = {
-    val out = Vector.newBuilder[Any]
-    var i = 0
-    while i < s.length do {
-      val colon = s.indexOf(':', i + 1)
-      if colon < 0 then throw new RuntimeException(s"FileStorage: malformed vector value: $s")
-      val tag = s.substring(i, i + 1)
-      val end = colon + 1 + s.substring(i + 1, colon).toInt
-      out += parseRaw(tag, s.substring(colon + 1, end))
-      i = end
-    }
-    out.result()
+    @tailrec def go(i: Int, acc: Vector[Any]): Vector[Any] =
+      if i >= s.length then acc
+      else {
+        val colon = s.indexOf(':', i + 1)
+        if colon < 0 then throw new RuntimeException(s"FileStorage: malformed vector value: $s")
+        val end = colon + 1 + s.substring(i + 1, colon).toInt
+        go(end, acc :+ parseRaw(s.substring(i, i + 1), s.substring(colon + 1, end)))
+      }
+    go(0, Vector.empty)
   }
 
   private def encodeStr(s: String): String =

@@ -265,7 +265,13 @@ object QMacro {
       def bound(field: String, op: String, value: Term): Range =
         if op.startsWith(">") then Range(field, Some(value), None, None)
         else Range(field, None, Some(value), None)
-      def flip(op: String): String = op.replace('<', '?').replace('>', '<').replace('?', '>')
+      def flip(op: String): String = op match {
+        case ">"   => "<"
+        case ">="  => "<="
+        case "<"   => ">"
+        case "<="  => ">="
+        case other => other
+      }
       def compare(lhs: Term, op: String, rhs: Term): Option[Range] =
         (fieldOf(lhs, param), fieldOf(rhs, param)) match {
           case (Some(f), None) if !referencesParam(rhs, param) && rangeable(f, rhs) =>

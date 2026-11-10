@@ -20,7 +20,7 @@ object Term {
   final case class Field[T](
       rowBinding: String,
       attr: String,
-      codec: Codec[Any] = Codec.eid
+      codec: Codec[Any] = Codec.asIs
   ) extends Term[T] {
     private[datomlite] def lower: Q.Term = Q.Var(s"$rowBinding::$attr")
   }

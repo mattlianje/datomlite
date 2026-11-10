@@ -29,15 +29,15 @@ object FieldShape {
     * Int, next: Set[N])`)
     */
   final case class Ref(target: () => Entity[?]) extends FieldShape {
-    def codec: Codec[Any] = Codec.eid
+    def codec: Codec[Any] = Codec.asIs
   }
 
   final case class MultiRef(target: () => Entity[?]) extends FieldShape {
-    def codec: Codec[Any] = Codec.eid
+    def codec: Codec[Any] = Codec.asIs
   }
 
   /** `Option[R]` of a ref `R`. `None` writes no datom, same as `Optional` */
   final case class OptionalRef(target: () => Entity[?]) extends FieldShape {
-    def codec: Codec[Any] = Codec.eid
+    def codec: Codec[Any] = Codec.asIs
   }
 }

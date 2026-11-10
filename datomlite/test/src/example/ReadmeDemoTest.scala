@@ -7,9 +7,9 @@ class ReadmeDemoTest extends munit.FunSuite:
   case class Fighter(@key name: String, style: String, country: String) derives Entity
   case class Bout(@key id: String, red: Fighter, blue: Fighter, winner: Fighter) derives Entity
 
-  val li     = Fighter("Jet Li", "Wushu", "China")
+  val li = Fighter("Jet Li", "Wushu", "China")
   val gegard = Fighter("Gegard Mousasi", "Mixed", "Netherlands")
-  val rory   = Fighter("Rory MacDonald", "Pankration", "Canada")
+  val rory = Fighter("Rory MacDonald", "Pankration", "Canada")
 
   val db = Db(
     Bout("B1", li, gegard, li),
@@ -46,8 +46,14 @@ class ReadmeDemoTest extends munit.FunSuite:
 
   test("speculative branches leave db untouched"):
     val whatIf = db.add(Bout("B5", li, gegard, gegard))
-    assertEquals(standings(whatIf).map(r => (r.name, r.wins)), Vector(("Jet Li", 3L), ("Gegard Mousasi", 2L)))
-    assertEquals(standings(db).map(r => (r.name, r.wins)), Vector(("Jet Li", 3L), ("Gegard Mousasi", 1L)))
+    assertEquals(
+      standings(whatIf).map(r => (r.name, r.wins)),
+      Vector(("Jet Li", 3L), ("Gegard Mousasi", 2L))
+    )
+    assertEquals(
+      standings(db).map(r => (r.name, r.wins)),
+      Vector(("Jet Li", 3L), ("Gegard Mousasi", 1L))
+    )
     val d = db.diff(whatIf)
     assert(d.added.map(_.v).contains("B5"))
     assert(d.retracted.isEmpty)

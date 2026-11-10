@@ -1,6 +1,6 @@
 package datomlite
 
-import scala.annotation.implicitNotFound
+import scala.annotation.{implicitNotFound, tailrec}
 import scala.concurrent.ExecutionContext
 import scala.util.NotGiven
 import scala.util.control.NonFatal
@@ -167,23 +167,24 @@ final private[datomlite] class Hub {
   }
 
   /** Deliver what's queued, unless someone else already is */
-  def drain(): Unit = {
-    val mine = lock.synchronized {
-      val go = !draining && pending.nonEmpty
-      if go then draining = true
-      go
-    }
-    if mine then {
-      var done = false
-      try {
-        var ev = next()
-        while ev.isDefined do {
-          deliver(ev.get)
-          ev = next()
-        }
-        done = true
-      } finally if !done then lock.synchronized { draining = false }
-    }
+  def drain(): Unit =
+    if claim() then
+      try deliverAll()
+      catch {
+        case t: Throwable =>
+          lock.synchronized { draining = false }
+          throw t
+      }
+
+  private def claim(): Boolean = lock.synchronized {
+    val go = !draining && pending.nonEmpty
+    if go then draining = true
+    go
+  }
+
+  @tailrec private def deliverAll(): Unit = next() match {
+    case Some(ev) => deliver(ev); deliverAll()
+    case None     => ()
   }
 
   /** Next event. When there's none, give up the drain under the same lock */

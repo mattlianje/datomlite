@@ -36,8 +36,8 @@ object Codec {
     def decode(v: Any): T = from(p.decode(v))
   }
 
-  /** Refs just store the target eid */
-  private[datomlite] val eid: Codec[Any] = new Codec[Any] {
+  /** Stores whatever it's given. Refs go through this with the target eid */
+  private[datomlite] val asIs: Codec[Any] = new Codec[Any] {
     def encode(t: Any): Any = t
     def decode(v: Any): Any = v
   }
@@ -170,12 +170,7 @@ object Codec {
 
     def decode(v: Any): T = {
       val byName = elems(v, name).grouped(2).collect { case Vector(k: String, x) => k -> x }.toMap
-      val values = fields.map { (label, c) =>
-        byName.get(label) match {
-          case Some(x) => c.decode(x)
-          case None    => mismatch(name)(v)
-        }
-      }
+      val values = fields.map((label, c) => c.decode(byName.getOrElse(label, mismatch(name)(v))))
       m.fromProduct(Tuple.fromArray(values.map(_.asInstanceOf[Object])))
     }
   }
