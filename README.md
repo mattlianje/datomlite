@@ -45,16 +45,14 @@ Try it in your REPL:
 - [How it works](#how-it-works)
 - [FAQ](#faq)
 - [Example schema](#example-schema)
-- Modelling your data
+- [Modelling your data](#keys-and-uniqueness)
   - [Keys and uniqueness](#keys-and-uniqueness)
   - [Refs and cardinality](#refs-and-cardinality)
   - [Optional fields](#optional-fields)
   - [Value types and codecs](#value-types-and-codecs)
-- Writing
-  - [Writes](#writing)
+- [Writing](#writing)
   - [Tx blocks](#tx-blocks-batch-multiple-ops)
-- Reading
-  - [Reads](#reading)
+- [Reading](#reading)
   - [Predicates](#predicates-as-index-probes)
   - [Pull](#pull-to-shape-query-results)
     - [Reverse refs](#reverse-refs)
@@ -71,12 +69,10 @@ Try it in your REPL:
     - [Self-ref closure (`Rule.reaches`)](#self-ref-closure-rulereaches)
     - [Multi-body rules (`Rule[A, B]`)](#multi-body-rules-rulea-b)
     - [Recursive rules (`Rule.recursive`)](#recursive-rules-rulerecursive)
-- Time travel
-  - [Past states](#time-travel-through-past-states)
+- [Time travel](#time-travel-through-past-states)
   - [History](#history-of-every-entity)
   - [Diff](#diff-two-databases)
-- Conn: a db that changes
-  - [Conn](#conn-a-db-that-changes)
+- [Conn: a db that changes](#conn-a-db-that-changes)
   - [Listen](#listen-for-db-changes)
   - [Watch](#watch-a-query)
   - [Persistence](#persistence-and-custom-backends)
@@ -92,7 +88,7 @@ import datomlite._
 /* Just derive `Entity` on your case classes */
 case class Person(@key email: String, name: String) derives Entity
 
-/* A db is a value. Seed it in one tx */
+/* A db is a value */
 val db = Db(Person("m@x.io", "Matt"), Person("a@x.io", "Alice"))
 
 /* Your db feels like a collection */
@@ -102,17 +98,15 @@ db.where[Person](_.email == "m@x.io").one
 db.where[Person].filter(_.name.startsWith("M")).take(5).toList
 for p <- db.where[Person] do println(p.name)
 
-/* Writes hand back a new db, the old one is untouched */
+/* Writes hand back a new db */
 val db2 = db.upsert(Person("m@x.io", "Matthieu"))
-db.where[Person](_.email == "m@x.io").one    // still Matt
-db2.where[Person](_.email == "m@x.io").one   // Matthieu
 
 /* Typed Datalog: joins, projections, aggs */
 db2.query[Person] { p =>
   find(p.name) where (p.email === "m@x.io")
 }.run
 
-/* One shared db that changes? Hold it in a Conn */
+/* Hold a shared mutable DB in a Conn */
 val conn = Conn(db2)
 conn.retractWhere[Person](_.email == "m@x.io")
 conn.db.where[Person].run
@@ -130,7 +124,7 @@ Conn(db)                           one shared db: listen, watch, storage
 db.pretty                          print the live state
 ```
 
-## How it works
+## How it works?
 Essentially, datomlite is a bunch of macro based niceties on top of an append-only log of `(eid, attr, value)` triples plus in-memory indices over the live
 projection. Your case classes are shredded into triples on write and reassembled on read,
 so queries feel like working with your original typed objects.
