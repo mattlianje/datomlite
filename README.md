@@ -125,11 +125,11 @@ db.pretty                          print the live state
 ```
 
 ## How it works?
-Essentially, datomlite is a bunch of macro based niceties on top of an append-only log of `(eid, attr, value)` triples plus in-memory indices over the live
+Essentially, **datomlite** is a bunch of macro based niceties on top of an append-only log of `(eid, attr, value)` triples plus in-memory indices over the live
 projection. Your case classes are shredded into triples on write and reassembled on read,
 so queries feel like working with your original typed objects.
 
-The indices are **EAVT** for live entity reads, **AVET** for value lookups, and a **class index** to enumerate entities of a Scala type. All are derived from the append-only log and updated in lockstep with each commit.
+The indices are EAVT, AVET, and a **class index** to enumerate entities of a Scala type. All are derived from the append-only log and updated in lockstep with each commit.
 
 Suppose we add two pugilists to our database, "Jet Li" and "Masvidal". Adding them appends datoms and the live projection picks them up:
 
@@ -175,25 +175,23 @@ No. Recursion goes through named rules, negation is top-level conjunctions only,
 
 **Differences from Datomic / Datascript?**<br>
 - Case classes are "the schema". There is no `:db/ident`, no attribute registration or otherwise separate cardinality/uniqueness facts.
-- Queries are typed Scala, not vectors of triples. Field access is compile-checked by the datomlite macros.
-- Single-process. Writes to a `Conn` are serialized. No peer/transactor, no client API
+- Queries are typed Scala, not vectors of triples.
+- Single-process. Writes to a `Conn` are serialized, and there is no peer/transactor, no client API
 
 **`Db` or `Conn`?**<br>
-A `Db` is an immutable value: `db.add(...)` returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
-what-ifs and time travel. A `Conn` holds the current `Db` and swaps in a new one on each commit. Reach for it when several threads share one
-changing db, when you want `listen` / `watch`, or when commits should go to a `Storage`.
+A `Db` is an immutable value returns a new `Db` and leaves `db` as it was. That is all you need for most in-process use, tests,
+what-ifs and time travel. On the other hand `Conn` holds the current `Db` and swaps in a new one on each commit... and you'll want it when setting up serveral threads using a changing DB or for listening for changes.
 
 **Transaction guarantees?**<br>
-- **Atomicity.** All asserts and retracts in a tx land together or none do. A `UniqueViolation` or any thrown exception inside a tx block aborts the whole thing with no partial state.
+- **Atomicity.** All asserts and retracts in a tx land together or none do.
 - **Values.** A `Db` never changes, so reads on it never lock, never block, and always see one consistent state.
-- **Serialized commits.** Any number of threads can write to a `Conn`. Commits run one at a time, in order, under a short write lock.
-- **Atomic read-modify-write.** Writes that read first (predicate writes, tx blocks, tx fns) do that read inside the commit. So a concurrent `conn.upsertWhere(_.name == "hits")(c => c.copy(n = c.n + 1))` never loses an increment.
-- **Write-ahead append.** `Storage.append` runs before a commit becomes visible on the `Conn`. If it throws, the tx aborts: no state change and no listener fires.
+- **Serialized commits.** Any number of threads can write to a `Conn`, and the commits will run one at a time, in order, under a short write lock.
+- **Atomic read-modify-write.** Writes that read first (predicate writes, tx blocks, tx fns) do that read inside the commit.
+- **Write-ahead append.** Transactions run before commits become visible on the `Conn` ... so if they throw, the tx aborts nicely and nothing like listeners fire.
 
-**What is the inspiration?**<br>
+**Inspiration?**<br>
 Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/), [Datascript](https://github.com/tonsky/datascript), [Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is in the general orbit of Datalog flavoured triple stores, it puts particular (and to my knowledge novel) emphasis on type-safety and feeling 100% embedded into the host language. 
 
-**datomlite** is "DB-as-a-value": the `Db` is immutable and the one mutable thing, the `Conn`, is opt-in.
 
 ## Example schema
 We'll use these vanilla domain entities throughout for example purposes...
@@ -449,10 +447,14 @@ db.tx { b => ... }            mixed add/retract/upsert in one tx
 b.add / b.retract / b.upsert  inside the block
 b.retractWhere[A](pred)       finds matches, appends a retract
 b.upsertWhere[A](pred)(f)     reads matches, applies f, appends an upsert
-db.retractWhere / db.upsertWhere(pred)(f)   one-shot tx versions
+db.retractWhere /             one-shot tx versions
+db.upsertWhere(pred)(f)  
 Tx.batch(steps*)              hold steps as a value
 Tx.fn(db => tx)               a step computed from the state-so-far
-Tx.block / Tx.retractWhere / Tx.upsertWhere   the same, as Tx values
+
+Tx.block / Tx.retractWhere   the same, as Tx values
+Tx.upsertWhere
+   
 db.transact(tx)               apply a Tx value
 ```
 
