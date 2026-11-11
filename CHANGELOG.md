@@ -2,24 +2,27 @@
 
 ## Unreleased
 
-- **Breaking:** `Db` is an immutable value. `add`, `retract`, `upsert`, `retractWhere`, `upsertWhere` and `tx` return the new `Db`; `transact` returns a `TxReport`
-- **Breaking:** `Conn` holds a changing db. `Conn()`, `Conn(db)` or `Conn(storage)`; `conn.db` is the current value. Same write verbs, returning `TxReport`
-- **Breaking:** `listen` and `watch` live on `Conn`. `snapshot` and `withTx` are gone (a `Db` already is a snapshot, and any write is a branch)
-- **Breaking:** `Db(storage, values*)` is now `Conn(storage)`. `Db.load(storage)` reads a storage into a plain value
-- `TxReport.dbBefore` / `TxReport.dbAfter`
-- `Tx.block`, `Tx.retractWhere`, `Tx.upsertWhere` build the same txs as values
-- `Db.empty`
-- `Codec[T]` for value types. `derives Codec` on case classes and enums, `Codec.of` for anything else
-- `Date` (a calendar day) next to `Time`
-- `Option[R]` fields where `R` is an entity are optional refs
-- `Tx.fn(db => tx)` reads and writes in one commit. `db.tx`, `retractWhere` and `upsertWhere` use it so concurrent updates don't get lost
-- Writes are serialized, reads never block. A failing `Storage.append` aborts the tx
-- `TxReport.datoms`
-- Listeners hear each commit once and in order. One that throws doesn't break the tx or the others
-- `>`, `>=`, `<`, `<=` and `startsWith` use the index instead of scanning
-- `conn.watch(q)(f)` for live queries
-- **Breaking:** `listen` returns a `Subscription`
-- **Breaking:** transacting on the conn inside `conn.tx` or `Tx.fn` throws. Use `b` instead
+`Db` is now an immutable value: writes return a new db and leave the old one as it was. The mutable part moved to `Conn`, which you only
+need for a shared db, listeners, live queries or storage.
+
+Breaking:
+- Writes on a db return the new db, and `transact` returns a `TxReport`
+- `listen` and `watch` are on the conn now, and `listen` returns a subscription you can cancel
+- `snapshot` and `withTx` are gone, since every db is already a snapshot
+- `Db(storage, ...)` is now `Conn(storage)`. Use `Db.load(storage)` to read one into a plain db
+- Writing to the conn from inside its own tx block throws. Use the block's builder instead
+
+New:
+- Live queries with `conn.watch`
+- `Tx.fn` reads and writes in one commit, so concurrent updates no longer get lost
+- Tx blocks and predicate writes can be built as values and applied later
+- Tx reports include the db before and after, plus the datoms written
+- Codecs for your own value types, derivable on case classes and enums
+- A `Date` type for calendar days
+- Optional refs
+- Range and prefix filters use the index instead of scanning
+- Conn writes are serialized and reads never block. A failed storage append aborts the tx
+- Listeners see each commit once and in order, and one that throws doesn't affect the others
 
 ## 0.1.0 — 2026-05-18
 
