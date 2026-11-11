@@ -389,21 +389,11 @@ Both sort right and range-probe the index like any number.
 ```scala
 case class Task(@key id: String, due: Date, doneAt: Option[Time]) derives Entity
 
-val d = Date.of(2026, 10, 13)       // or Date.parse("2026-10-13"), Date.today()
-d.plusDays(7).iso                   // "2026-10-20"
-Date.at(Time.now())                 // the UTC day of an instant
+val d = Date.of(2026, 10, 13)     /* or Date.parse("2026-10-13"), Date.today() */
+d.plusDays(7).iso                 /* "2026-10-20" */
+Date.at(Time.now())               /* the UTC day of an instant */
 
-db.where[Task](_.due < Date.today()).run          /* index slice, not a scan */
-```
-
-They're plain numbers at runtime so print them with `.iso`. On the JVM `java.time` is one line away:
-
-```scala
-given Codec[LocalDate] =
-  Codec.of[LocalDate, Long](_.toEpochDay, LocalDate.ofEpochDay)
-
-given Codec[Instant] =
-  Codec.of[Instant, Long](_.toEpochMilli, Instant.ofEpochMilli)
+db.where[Task](_.due < Date.today()).run  /* index slice, not a scan */
 ```
 
 ## Writing
