@@ -13,3 +13,22 @@ out/
 *~
 
 bundles/
+
+# haskell / cabal
+dist/
+dist-newstyle/
+cabal.project.local
+cabal.project.local~
+.ghc.environment.*
+.stack-work/
+*.hi
+*.o
+*.dyn_hi
+*.dyn_o
+*.prof
+*.tix
+.hpc/
+
+# emacs
+\#*\#
+.#*

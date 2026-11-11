@@ -1,4 +1,4 @@
-.PHONY: compile test test-jvm test-js test-native publish-local bundle clean fmt fmt-check repl svg
+.PHONY: compile test test-jvm test-js test-native publish-local bundle clean fmt fmt-check repl svg shots
 
 VERSION := 0.1.0
 SCALA_VERSION := 3.7.3
@@ -65,3 +65,7 @@ svg:
 		dot -Tsvg "$$f" > "$$out"; \
 		pix/theme-svg.sh "$$out"; \
 	done
+
+# Render the README REPL screenshot from demos/Repl.scala (a real Scala 3 REPL run)
+shots:
+	python3 datomlite-hs/demos/render.py demos/Repl.scala pix/datomlite-repl.png

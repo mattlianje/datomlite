@@ -1,0 +1,9 @@
+:set prompt "λ> "
+:set prompt-cont " | "
+:set -XOverloadedStrings
+:set -XOverloadedRecordDot
+:set -XDeriveGeneric
+:set -XTypeApplications
+:set -XDataKinds
+:set -XDuplicateRecordFields
+:load Datomlite
