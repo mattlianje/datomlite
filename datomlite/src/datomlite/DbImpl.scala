@@ -1,6 +1,6 @@
 package datomlite
 
-import java.util.concurrent.atomic.AtomicReference
+import scala.collection.immutable.TreeMap
 
 private[datomlite] object DbImpl {
 
@@ -16,17 +16,20 @@ private[datomlite] object DbImpl {
       eavt: Map[Eid, Map[String, Set[Any]]],
       /** entity name -> live eids */
       eidByClass: Map[String, Set[Eid]],
-      /** attr -> value -> eids (hash index) */
-      avet: Map[String, Map[Any, Set[Eid]]],
+      /** attr -> value -> eids, sorted by `Compare.total` so a range is just a slice */
+      avet: Map[String, TreeMap[Any, Set[Eid]]],
       log: Vector[Datom]
   ) {
-    def commit(tx: Tx, time: Time): (State, TxReport) = {
+
+    /** Apply `tx` as the next transaction. `before` is the `Db` over this state, so the report can
+      * hand back both sides
+      */
+    def commit(tx: Tx, time: Time, before: Db): TxReport = {
       val txId = TxId(nextTxId)
       val acc = applyTx(tx, txId, time)
-      (
-        acc.state.copy(nextTxId = nextTxId + 1),
-        TxReport(txId, time, acc.adds, acc.retracts, acc.eids)
-      )
+      val next = acc.state.copy(nextTxId = nextTxId + 1)
+      val datoms = next.log.drop(log.size)
+      TxReport(txId, time, acc.adds, acc.retracts, acc.eids, datoms, before, new Snap(next))
     }
 
     /** Single-step apply...
@@ -44,6 +47,7 @@ private[datomlite] object DbImpl {
         steps.foldLeft(TxAccum.empty(this)) { (acc, step) =>
           acc.combine(acc.state.applyTx(step, txId, time))
         }
+      case Tx.Fn(f) => applyTx(f(new Snap(this)), txId, time)
     }
 
     private def assertMany(
@@ -182,11 +186,31 @@ private[datomlite] object DbImpl {
       }
     }
 
-    private def findExisting(className: String, attrs: Map[String, Set[Any]]): Option[Eid] =
+    private[DbImpl] def findExisting(className: String, attrs: Map[String, Set[Any]]): Option[Eid] =
       eidByClass.getOrElse(className, Set.empty).find(eid => eavt.get(eid).contains(attrs))
 
+    private def byValue(attr: String): TreeMap[Any, Set[Eid]] =
+      avet.getOrElse(attr, State.noValues)
+
     def lookup(attr: String, value: Any): Set[Eid] =
-      avet.getOrElse(attr, Map.empty).getOrElse(value, Set.empty)
+      byValue(attr).getOrElse(value, Set.empty)
+
+    /** `(eid, value)` pairs of `attr` within `bounds`. Only walks that slice */
+    def scan(attr: String, bounds: Q.Bounds): Iterator[(Eid, Any)] = {
+      val byVal = byValue(attr)
+      val from = bounds.lo.fold(byVal.iterator)(byVal.iteratorFrom)
+      val slice = bounds.hi.fold(from)(hi => from.takeWhile((v, _) => Compare.total(v, hi) <= 0))
+      slice.flatMap((v, eids) => eids.iterator.map(_ -> v))
+    }
+
+    /** `(eid, value)` pairs of a string `attr` whose value starts with `prefix` */
+    def scanPrefix(attr: String, prefix: String): Iterator[(Eid, Any)] =
+      byValue(attr).iteratorFrom(prefix)
+        .takeWhile {
+          case (s: String, _) => s.startsWith(prefix)
+          case _              => false
+        }
+        .flatMap((v, eids) => eids.iterator.map(_ -> v))
   }
 
   /** Accumulator threaded through `applyTx`.
@@ -212,29 +236,31 @@ private[datomlite] object DbImpl {
   object State {
     val empty: State = State(0L, 0L, Map.empty, Map.empty, Map.empty, Vector.empty)
 
+    val noValues: TreeMap[Any, Set[Eid]] = TreeMap.empty(using Compare.ordering)
+
     def collapseToSets(flat: Iterable[(String, Any)]): Map[String, Set[Any]] =
       flat.foldLeft(Map.empty[String, Set[Any]]) { case (acc, (k, v)) =>
         acc.updated(k, acc.getOrElse(k, Set.empty) + v)
       }
 
     def avetAdd(
-        avet: Map[String, Map[Any, Set[Eid]]],
+        avet: Map[String, TreeMap[Any, Set[Eid]]],
         eid: Eid,
         attrs: Vector[(String, Any)]
-    ): Map[String, Map[Any, Set[Eid]]] =
+    ): Map[String, TreeMap[Any, Set[Eid]]] =
       attrs.foldLeft(avet) { case (acc, (a, v)) =>
-        val byVal = acc.getOrElse(a, Map.empty)
+        val byVal = acc.getOrElse(a, noValues)
         val eidsNow = byVal.getOrElse(v, Set.empty) + eid
         acc.updated(a, byVal.updated(v, eidsNow))
       }
 
     def avetRemove(
-        avet: Map[String, Map[Any, Set[Eid]]],
+        avet: Map[String, TreeMap[Any, Set[Eid]]],
         eid: Eid,
         attrs: Vector[(String, Any)]
-    ): Map[String, Map[Any, Set[Eid]]] =
+    ): Map[String, TreeMap[Any, Set[Eid]]] =
       attrs.foldLeft(avet) { case (acc, (a, v)) =>
-        val byVal = acc.getOrElse(a, Map.empty)
+        val byVal = acc.getOrElse(a, noValues)
         val left = byVal.getOrElse(v, Set.empty) - eid
         val byVal2 = if left.isEmpty then byVal - v else byVal.updated(v, left)
         if byVal2.isEmpty then acc - a else acc.updated(a, byVal2)
@@ -260,7 +286,7 @@ private[datomlite] object DbImpl {
         attrs.keys.headOption.map(a => a.takeWhile(_ != '/') -> eid)
       }.groupMap(_._1)(_._2).view.mapValues(_.toSet).toMap
 
-      val avet = live.foldLeft(Map.empty[String, Map[Any, Set[Eid]]]) {
+      val avet = live.foldLeft(Map.empty[String, TreeMap[Any, Set[Eid]]]) {
         case (acc, (eid, attrs)) => avetAdd(acc, eid, flatten(attrs))
       }
 
@@ -283,27 +309,26 @@ private[datomlite] object DbImpl {
       )
     val attrs = state.eavt.getOrElse(eid, Map.empty)
     val prefix = s"${e.name}/"
+    def refTo(target: Entity[?], v: Any): Any =
+      reconstructEntity(state, Eid(v.asInstanceOf[Long]), target, seen + eid)
     val materialized: Map[String, Any] =
       e.fields.zip(e.shapes).map { case (field, shape) =>
         val attrKey = prefix + field
         val values = attrs.getOrElse(attrKey, Set.empty[Any])
         val v: Any = shape match {
-          case FieldShape.Value =>
-            values.head
-          case FieldShape.MultiValue =>
-            values
-          case FieldShape.Optional =>
-            if values.isEmpty then None else Some(values.head)
+          case FieldShape.Value(codec) =>
+            codec.decode(values.head)
+          case FieldShape.MultiValue(codec) =>
+            values.map(codec.decode)
+          case FieldShape.Optional(codec) =>
+            values.headOption.map(codec.decode)
           case FieldShape.Ref(targetFn) =>
-            val target = targetFn()
-            val targetEid = Eid(values.head.asInstanceOf[Long])
-            reconstructEntity(state, targetEid, target, seen + eid)
+            refTo(targetFn(), values.head)
           case FieldShape.MultiRef(targetFn) =>
             val target = targetFn()
-            values.map { vv =>
-              val targetEid = Eid(vv.asInstanceOf[Long])
-              reconstructEntity(state, targetEid, target, seen + eid)
-            }
+            values.map(refTo(target, _))
+          case FieldShape.OptionalRef(targetFn) =>
+            values.headOption.map(refTo(targetFn(), _))
         }
         field -> v
       }.toMap
@@ -316,10 +341,7 @@ private[datomlite] object DbImpl {
     */
   private def findEidFor(state: State, entity: Entity[Any], value: Any): Option[Eid] =
     flattenForLookup(state, entity, value).flatMap { flat =>
-      val attrsAsSets = State.collapseToSets(flat)
-      state.eidByClass.getOrElse(entity.name, Set.empty).find { eid =>
-        state.eavt.get(eid).contains(attrsAsSets)
-      }
+      state.findExisting(entity.name, State.collapseToSets(flat))
     }
 
   /** Decompose `value` into its flat (attr, value) pairs against `state` for read-only lookup.
@@ -347,13 +369,8 @@ private[datomlite] object DbImpl {
         }
     }
 
-  /** Per-field decision for the shape walk.
-    *
-    * `Plain` is the static case... Value, MultiValue, Optional all collapse into a vector of (attr,
-    * value) pairs that the caller drops onto its accumulator unchanged. `Ref` and `MultiRef` hand
-    * the caller the target entity and the nested value(s) so `assertEntityRec` (which inserts) and
-    * `flattenForLookup` (which probes) can each do their own thing without duplicating the
-    * per-shape switch
+  /** What the shape walk makes of one field. `Plain` pairs are used as is... `Ref` / `MultiRef`
+    * hand back the target so the caller can recurse into it
     */
   sealed private trait FieldAction
   private object FieldAction {
@@ -373,16 +390,23 @@ private[datomlite] object DbImpl {
     entity.decompose(value).iterator.zip(entity.shapes.iterator).map { case ((field, v), shape) =>
       val attr = prefix + field
       shape match {
-        case FieldShape.Value =>
-          FieldAction.Plain(Vector(attr -> v))
-        case FieldShape.MultiValue =>
-          FieldAction.Plain(v.asInstanceOf[Set[Any]].iterator.map(attr -> _).toVector)
-        case FieldShape.Optional =>
-          FieldAction.Plain(v.asInstanceOf[Option[Any]].toVector.map(attr -> _))
+        case FieldShape.Value(codec) =>
+          FieldAction.Plain(Vector(attr -> codec.encode(v)))
+        case FieldShape.MultiValue(codec) =>
+          FieldAction.Plain(
+            v.asInstanceOf[Set[Any]].iterator.map(x => attr -> codec.encode(x)).toVector
+          )
+        case FieldShape.Optional(codec) =>
+          FieldAction.Plain(v.asInstanceOf[Option[Any]].toVector.map(x => attr -> codec.encode(x)))
         case FieldShape.Ref(targetFn) =>
           FieldAction.Ref(attr, widen(targetFn()), v)
         case FieldShape.MultiRef(targetFn) =>
           FieldAction.MultiRef(attr, widen(targetFn()), v.asInstanceOf[Set[Any]])
+        case FieldShape.OptionalRef(targetFn) =>
+          v.asInstanceOf[Option[Any]] match {
+            case Some(x) => FieldAction.Ref(attr, widen(targetFn()), x)
+            case None    => FieldAction.Plain(Vector.empty)
+          }
       }
     }
   }
@@ -407,17 +431,26 @@ private[datomlite] object DbImpl {
   private def reconstructEids[A](state: State, eids: Set[Eid], e: Entity[A]): Iterator[A] =
     eids.iterator.map(eid => reconstructEntity(state, eid, e))
 
+  /** AVET probe for `e`'s `field` holding `value`
+    *
+    * `value` is of the field's type and goes through its codec. Ref fields probe by target eid
+    */
+  private def eidsByField[A](state: State, e: Entity[A], field: String, value: Any): Set[Eid] = {
+    val attr = s"${e.name}/$field"
+    e.fields.indexOf(field) match {
+      case -1 => state.lookup(attr, value)
+      case i  => state.lookup(attr, e.shapes(i).codec.encode(value))
+    }
+  }
+
   private def byEqQuery[A](
       db: Db,
       state: State,
       e: Entity[A],
       attr: String,
       value: Any
-  ): Query[A] = {
-    val key = s"${e.name}/$attr"
-    val eids = state.lookup(key, value)
-    Query(db, () => reconstructEids(state, eids, e))
-  }
+  ): Query[A] =
+    Query(db, () => reconstructEids(state, eidsByField(state, e, attr, value), e))
 
   private def evalClausesAt(state: State, clauses: Vector[Q.Clause]): Iterator[Map[String, Any]] = {
     val registry = {
@@ -675,14 +708,14 @@ private[datomlite] object DbImpl {
     val candidates: Iterator[(Eid, Any)] = (knownE, knownV) match {
       case (Some(eAny), _) =>
         val eid = Eid(eAny.asInstanceOf[Long])
-        state.eavt.get(eid).flatMap(_.get(pat.a))
-          .iterator.flatMap(_.iterator).map(v => (eid, v))
+        state.eavt.get(eid).flatMap(_.get(pat.a)) match {
+          case Some(vs) => vs.iterator.map(v => (eid, v))
+          case None     => Iterator.empty
+        }
       case (None, Some(vAny)) =>
         state.lookup(pat.a, vAny).iterator.map(eid => (eid, vAny))
       case (None, None) =>
-        state.eavt.iterator.flatMap { case (eid, attrs) =>
-          attrs.get(pat.a).iterator.flatMap(_.iterator).map(v => (eid, v))
-        }
+        state.scan(pat.a, pat.bounds)
     }
 
     def bind(t: Q.Term, value: Any, into: Map[String, Any]): Map[String, Any] = t match {
@@ -696,162 +729,153 @@ private[datomlite] object DbImpl {
     }
   }
 
-  final class Live(storage: Storage) extends Db with DbInternal {
-    private val ref = AtomicReference[State](State.rebuild(storage.load()))
-    private val listeners = scala.collection.mutable.ListBuffer.empty[TxReport => Unit]
+  /** Live eids of `e` whose `field` is in range
+    *
+    * Bounds are values of the field's type and go through its codec
+    */
+  private def eidsInRange[A](
+      state: State,
+      e: Entity[A],
+      field: String,
+      lo: Option[Any],
+      hi: Option[Any],
+      prefix: Option[String]
+  ): Iterator[Eid] = {
+    val attr = s"${e.name}/$field"
+    val i = e.fields.indexOf(field)
+    val encode: Any => Any = if i < 0 then identity else e.shapes(i).codec.encode
+    val bounds = Q.Bounds(lo.map(encode), hi.map(encode))
+    val present = prefix.fold(state.scan(attr, bounds))(p =>
+      state.scanPrefix(attr, p).filter((_, v) => bounds.admits(v))
+    )
+    present.map(_._1).distinct
+  }
 
+  private def byRangeQuery[A](
+      db: Db,
+      state: State,
+      e: Entity[A],
+      field: String,
+      lo: Option[Any],
+      hi: Option[Any],
+      prefix: Option[String]
+  ): Query[A] =
+    Query(
+      db,
+      () => eidsInRange(state, e, field, lo, hi, prefix).map(reconstructEntity(state, _, e))
+    )
+
+  /** The `Db` value: one `State` and the reads over it
+    *
+    * `deps` hears about every read. That's how `watch` learns what a query depends on
+    */
+  final class Snap(private[datomlite] val state: State, deps: Deps = Deps.off)
+      extends Db
+      with DbInternal {
     def internal: DbInternal = this
 
     def all[A](using e: Entity[A]): Query[A] = {
-      val s = ref.get
-      Query(this, () => reconstructAll(s, e))
+      deps.entity(e)
+      Query(this, () => reconstructAll(state, e))
     }
 
-    def byEqByName[A](attr: String, value: Any)(using e: Entity[A]): Query[A] =
-      byEqQuery(this, ref.get, e, attr, value)
+    def byEqByName[A](attr: String, value: Any)(using e: Entity[A]): Query[A] = {
+      deps.entity(e)
+      byEqQuery(this, state, e, attr, value)
+    }
 
-    def eidsByEq(attr: String, value: Any): Set[Long] =
-      ref.get.lookup(attr, value).map(Eid.value)
+    def byRangeByName[A](field: String, lo: Option[Any], hi: Option[Any], prefix: Option[String])(
+        using e: Entity[A]
+    ): Query[A] = {
+      deps.entity(e)
+      byRangeQuery(this, state, e, field, lo, hi, prefix)
+    }
 
-    def eidsByEqByName[A](attr: String, value: Any)(using e: Entity[A]): Set[Long] =
-      ref.get.lookup(s"${e.name}/$attr", value).map(Eid.value)
+    def eidsByEq(attr: String, value: Any): Set[Long] = {
+      deps.attr(attr)
+      state.lookup(attr, value).map(Eid.value)
+    }
 
-    def allEids[A](using e: Entity[A]): Set[Long] =
-      ref.get.eidByClass.getOrElse(e.name, Set.empty).map(Eid.value)
+    def eidsByEqByName[A](attr: String, value: Any)(using e: Entity[A]): Set[Long] = {
+      deps.entity(e)
+      eidsByField(state, e, attr, value).map(Eid.value)
+    }
 
-    def eidOf[A](a: A)(using e: Entity[A]): Option[Long] =
-      findEidFor(ref.get, widen(e), a).map(Eid.value)
+    def allEids[A](using e: Entity[A]): Set[Long] = {
+      deps.entity(e)
+      state.eidByClass.getOrElse(e.name, Set.empty).map(Eid.value)
+    }
 
-    def pullCtx: PullCtx = new StateCtx(ref.get)
+    def eidOf[A](a: A)(using e: Entity[A]): Option[Long] = {
+      deps.entity(e)
+      findEidFor(state, widen(e), a).map(Eid.value)
+    }
+
+    def pullCtx: PullCtx = new StateCtx(state, deps)
 
     def pullManyEids[A, R](eids: Iterable[Long])(f: Pull[A] => R)(using e: Entity[A]): Vector[R] =
-      pullEids(ref.get, eids, e, f)
+      pullEids(state, deps, eids, e, f)
 
-    def evalClauses(clauses: Vector[Q.Clause]): Iterator[Map[String, Any]] =
-      evalClausesAt(ref.get, clauses)
+    def evalClauses(clauses: Vector[Q.Clause]): Iterator[Map[String, Any]] = {
+      deps.clauses(clauses)
+      evalClausesAt(state, clauses)
+    }
 
-    def liveDatoms: Vector[Datom] = liveDatomsOf(ref.get)
+    def liveDatoms: Vector[Datom] = {
+      deps.everything()
+      liveDatomsOf(state)
+    }
 
-    def byEid[A](eid: Long)(using e: Entity[A]): Option[A] =
-      eidLookup(ref.get, eid, e)
+    def byEid[A](eid: Long)(using e: Entity[A]): Option[A] = {
+      deps.entity(e)
+      eidLookup(state, eid, e)
+    }
 
     def transact(tx: Tx): TxReport = {
-      val now = Time.now()
-      @scala.annotation.tailrec
-      def cas(): (TxReport, Vector[Datom]) = {
-        val cur = ref.get
-        val (next, rep) = cur.commit(tx, now)
-        if ref.compareAndSet(cur, next) then (rep, next.log.drop(cur.log.size))
-        else cas()
-      }
-      val (report, newDatoms) = cas()
-      if newDatoms.nonEmpty then storage.append(newDatoms)
-      listeners.synchronized(listeners.foreach(_(report)))
-      report
+      deps.everything()
+      state.commit(tx, Time.now(), if deps eq Deps.off then this else new Snap(state))
     }
-
-    def withTx(tx: Tx): Db = {
-      val (next, _) = ref.get.commit(tx, Time.now())
-      new Snap(next)
-    }
-
-    def snapshot: Db = new Snap(ref.get)
 
     def asOf(tx: TxId): Db = {
-      val s = ref.get
-      val slice = s.log.takeWhile(_.t.value <= tx.value)
-      new Snap(State.rebuild(slice))
-    }
-
-    @scala.annotation.targetName("asOfTime")
-    def asOf(at: Time): Db = {
-      val s = ref.get
-      val slice = s.log.takeWhile(_.time <= at)
-      new Snap(State.rebuild(slice))
-    }
-
-    def listen(f: TxReport => Unit): Unit =
-      listeners.synchronized { listeners += f; () }
-
-    def log: Vector[Datom] = ref.get.log
-
-    def historyOf[A](a: A)(using e: Entity[A]): Vector[Datom] =
-      historyForValue(ref.get, e, a)
-
-    def history(eid: Long): Vector[Datom] =
-      ref.get.log.filter(_.e == Eid(eid))
-
-    def pretty: String = prettyOf(ref.get)
-    def prettyLog(color: Boolean = false): String = prettyLogOf(ref.get.log, color)
-  }
-
-  final class Snap(state: State) extends Db with DbInternal {
-    def internal: DbInternal = this
-
-    def all[A](using e: Entity[A]): Query[A] =
-      Query(this, () => reconstructAll(state, e))
-
-    def byEqByName[A](attr: String, value: Any)(using e: Entity[A]): Query[A] =
-      byEqQuery(this, state, e, attr, value)
-
-    def eidsByEq(attr: String, value: Any): Set[Long] =
-      state.lookup(attr, value).map(Eid.value)
-
-    def eidsByEqByName[A](attr: String, value: Any)(using e: Entity[A]): Set[Long] =
-      state.lookup(s"${e.name}/$attr", value).map(Eid.value)
-
-    def allEids[A](using e: Entity[A]): Set[Long] =
-      state.eidByClass.getOrElse(e.name, Set.empty).map(Eid.value)
-
-    def eidOf[A](a: A)(using e: Entity[A]): Option[Long] =
-      findEidFor(state, widen(e), a).map(Eid.value)
-
-    def pullCtx: PullCtx = new StateCtx(state)
-
-    def pullManyEids[A, R](eids: Iterable[Long])(f: Pull[A] => R)(using e: Entity[A]): Vector[R] =
-      pullEids(state, eids, e, f)
-
-    def evalClauses(clauses: Vector[Q.Clause]): Iterator[Map[String, Any]] =
-      evalClausesAt(state, clauses)
-
-    def liveDatoms: Vector[Datom] = liveDatomsOf(state)
-
-    def byEid[A](eid: Long)(using e: Entity[A]): Option[A] =
-      eidLookup(state, eid, e)
-
-    def transact(tx: Tx): TxReport =
-      throw UnsupportedOperationException("snapshot is read-only; transact on a live Db")
-
-    def withTx(tx: Tx): Db = {
-      val (next, _) = state.commit(tx, Time.now())
-      new Snap(next)
-    }
-
-    def snapshot: Db = this
-
-    def asOf(tx: TxId): Db = {
+      deps.everything()
       val slice = state.log.takeWhile(_.t.value <= tx.value)
       new Snap(State.rebuild(slice))
     }
 
     @scala.annotation.targetName("asOfTime")
     def asOf(at: Time): Db = {
+      deps.everything()
       val slice = state.log.takeWhile(_.time <= at)
       new Snap(State.rebuild(slice))
     }
 
-    def listen(f: TxReport => Unit): Unit = ()
+    def log: Vector[Datom] = {
+      deps.everything()
+      state.log
+    }
 
-    def log: Vector[Datom] = state.log
-
-    def historyOf[A](a: A)(using e: Entity[A]): Vector[Datom] =
+    def historyOf[A](a: A)(using e: Entity[A]): Vector[Datom] = {
+      deps.everything()
       historyForValue(state, e, a)
+    }
 
-    def history(eid: Long): Vector[Datom] =
+    def history(eid: Long): Vector[Datom] = {
+      deps.everything()
       state.log.filter(_.e == Eid(eid))
+    }
 
-    def pretty: String = prettyOf(state)
-    def prettyLog(color: Boolean = false): String = prettyLogOf(state.log, color)
+    def pretty: String = {
+      deps.everything()
+      prettyOf(state)
+    }
+
+    def prettyLog(color: Boolean = false): String = {
+      deps.everything()
+      prettyLogOf(state.log, color)
+    }
+
+    override def toString: String =
+      s"Db(${state.eavt.size} entities, ${state.log.size} datoms)"
   }
 
   /** Pinned read-only view of one `State`.
@@ -859,41 +883,57 @@ private[datomlite] object DbImpl {
     * Lookups inside a single pull closure all see the same world because the state is captured once
     * at pull-call time
     */
-  final private class StateCtx(state: State) extends PullCtx {
-    def scalarOf(eid: Long, attr: String): Any =
+  final private class StateCtx(state: State, deps: Deps) extends PullCtx {
+    def scalarOf(eid: Long, attr: String): Any = {
+      deps.attr(attr)
       state.eavt.get(Eid(eid)).flatMap(_.get(attr)).map(_.head).getOrElse(
         throw new RuntimeException(s"pull: no value at eid=$eid attr=$attr")
       )
+    }
 
-    def multiValueOf(eid: Long, attr: String): Set[Any] =
+    def multiValueOf(eid: Long, attr: String): Set[Any] = {
+      deps.attr(attr)
       state.eavt.get(Eid(eid)).flatMap(_.get(attr)).getOrElse(Set.empty)
+    }
 
-    def refEidOf(eid: Long, attr: String): Long =
+    def refEidOf(eid: Long, attr: String): Long = {
+      deps.attr(attr)
       state.eavt.get(Eid(eid)).flatMap(_.get(attr)).map(_.head.asInstanceOf[Long]).getOrElse(
         throw new RuntimeException(s"pull: no ref at eid=$eid attr=$attr")
       )
+    }
 
-    def multiRefEidsOf(eid: Long, attr: String): Vector[Long] =
+    def multiRefEidsOf(eid: Long, attr: String): Vector[Long] = {
+      deps.attr(attr)
       state.eavt.get(Eid(eid)).flatMap(_.get(attr))
         .map(_.toVector.map(_.asInstanceOf[Long])).getOrElse(Vector.empty)
+    }
 
-    def reconstructAt[A](eid: Long, e: Entity[A]): A =
+    def reconstructAt[A](eid: Long, e: Entity[A]): A = {
+      deps.entity(e)
       reconstructEntity(state, Eid(eid), e)
+    }
 
-    def existsAs[A](eid: Long, e: Entity[A]): Boolean =
+    def existsAs[A](eid: Long, e: Entity[A]): Boolean = {
+      deps.entity(e)
       state.eidByClass.getOrElse(e.name, Set.empty).contains(Eid(eid))
+    }
 
-    def reverseEids(attr: String, eid: Long): Vector[Long] =
+    def reverseEids(attr: String, eid: Long): Vector[Long] = {
+      deps.attr(attr)
       state.lookup(attr, eid).iterator.map(Eid.value).toVector
+    }
   }
 
   private def pullEids[A, R](
       state: State,
+      deps: Deps,
       eids: Iterable[Long],
       e: Entity[A],
       f: Pull[A] => R
   ): Vector[R] = {
-    val ctx = new StateCtx(state)
+    deps.entity(e)
+    val ctx = new StateCtx(state, deps)
     eids.iterator.map(eid => f(new Pull[A](ctx, eid, e))).toVector
   }
 

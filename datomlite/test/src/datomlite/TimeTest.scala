@@ -54,18 +54,16 @@ class TimeTest extends munit.FunSuite:
 
   test("Time.parse: drives asOf"):
     case class P(@key id: String) derives Entity
-    val db = Db()
-    db.add(P("a"))
+    val db1 = Db(P("a"))
     // Busy-wait so the second tx lands strictly later.
     val t0 = Time.now().epochMillis
     while Time.now().epochMillis - t0 < 2 do ()
-    db.add(P("b"))
+    val db = db1.add(P("b"))
     val cutoff = Time.parse("2099-01-01T00:00:00Z")
     assertEquals(db.asOf(cutoff).where[P].run.size, 2)
 
   test("asOf(String): String overload runs Time.parse"):
     case class P(@key id: String) derives Entity
-    val db = Db()
-    db.add(P("a"), P("b"))
+    val db = Db(P("a"), P("b"))
     assertEquals(db.asOf("2099-01-01").where[P].run.size, 2)
     assertEquals(db.asOf("1970-01-01").where[P].run.size, 0)

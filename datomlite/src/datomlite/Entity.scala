@@ -129,40 +129,41 @@ object Entity {
       case _            => valueShape[A, T]
     }
 
-  /** `Option[T]` of a non-ref scalar.
-    *
-    * `Option[Ref]` is rejected at derivation time.. users can lean on a sentinel ref or wait for
-    * the planned `OptionalRef` shape
-    */
+  /** Codec for a value field, erased so all the shapes fit in one list */
+  private inline def codecOf[T]: Codec[Any] = summonInline[Codec[T]].asInstanceOf[Codec[Any]]
+
+  /* Ref detection for the three shape builders below
+   *
+   * The self-ref guard goes first so we don't eagerly summon `Entity[A]` inside its own derivation
+   * (that path SOFs the lazy init). Self-refs and targets whose given is still initializing
+   * (`ev == null`, mutually recursive entities) get a thunk using `summonInline`... so the lookup
+   * waits until first use when the given is ready. The keyOf check waits with it
+   */
+
+  /** `Option[T]`... an optional ref when `T` is an entity, else an optional value */
   private inline def optionShape[A, T]: FieldShape =
     summonFrom {
-      case _: (T <:< A) => FieldShape.Optional
+      case _: (T <:< A) =>
+        FieldShape.OptionalRef(() => summonInline[Entity[A]].asInstanceOf[Entity[?]])
       case ev: Entity[T] =>
-        if ev == null then FieldShape.Optional
+        if ev == null then FieldShape.OptionalRef(() => summonInline[Entity[T]])
         else {
           require(
-            requirement = false,
-            s"Option[${ev.name}] (ref-typed Option) is not yet supported; use a plain ref"
+            ev.keyOf.isDefined,
+            s"ref target ${ev.name} needs .key (used as Option[${ev.name}] field)"
           )
-          FieldShape.Optional
+          FieldShape.OptionalRef(() => ev)
         }
       case _ =>
-        FieldShape.Optional
+        FieldShape.Optional(codecOf[T])
     }
 
-  /** Self-ref guard goes first so we don't trigger an eager summon of `Entity[A]` from inside its
-    * own derivation (that path SOFs the lazy init).
-    *
-    * For self-refs we still emit a `MultiRef`, but the thunk uses `summonInline` so the lookup is
-    * deferred until first use, by which time the given is fully initialized. The keyOf check is
-    * also deferred for the same reason
-    */
   private inline def setShape[A, T]: FieldShape =
     summonFrom {
       case _: (T <:< A) =>
         FieldShape.MultiRef(() => summonInline[Entity[A]].asInstanceOf[Entity[?]])
       case ev: Entity[T] =>
-        if ev == null then FieldShape.MultiValue
+        if ev == null then FieldShape.MultiRef(() => summonInline[Entity[T]])
         else {
           require(
             ev.keyOf.isDefined,
@@ -171,7 +172,7 @@ object Entity {
           FieldShape.MultiRef(() => ev)
         }
       case _ =>
-        FieldShape.MultiValue
+        FieldShape.MultiValue(codecOf[T])
     }
 
   private inline def valueShape[A, T]: FieldShape =
@@ -179,13 +180,13 @@ object Entity {
       case _: (T <:< A) =>
         FieldShape.Ref(() => summonInline[Entity[A]].asInstanceOf[Entity[?]])
       case ev: Entity[T] =>
-        if ev == null then FieldShape.Value
+        if ev == null then FieldShape.Ref(() => summonInline[Entity[T]])
         else {
           require(ev.keyOf.isDefined, s"ref target ${ev.name} needs .key")
           FieldShape.Ref(() => ev)
         }
       case _ =>
-        FieldShape.Value
+        FieldShape.Value(codecOf[T])
     }
 
   final private case class Impl[A](

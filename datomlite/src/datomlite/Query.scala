@@ -46,7 +46,7 @@ class Query[A] private[datomlite] (
 
   /** Project each row through a `Pull[A]` closure.
     *
-    * Snaps the db once, so every call inside the closure sees the same world. Each row's eid is
+    * The db is a value, so every call inside the closure sees the same world. Each row's eid is
     * resolved by structural match
     */
   def pull[R](f: Pull[A] => R)(using e: Entity[A]): Vector[R] =
@@ -57,9 +57,8 @@ class Query[A] private[datomlite] (
     pulled(f).nextOption()
 
   private def pulled[R](f: Pull[A] => R)(using e: Entity[A]): Iterator[R] = {
-    val snap = db.snapshot
-    val ctx = snap.internal.pullCtx
-    source().flatMap(a => snap.internal.eidOf[A](a).map(eid => f(new Pull[A](ctx, eid, e))))
+    val ctx = db.internal.pullCtx
+    source().flatMap(a => db.internal.eidOf[A](a).map(eid => f(new Pull[A](ctx, eid, e))))
   }
 
   /** Count rows by a derived key. Shorthand for `groupBy(f).view.mapValues(_.size.toLong).toMap`.

@@ -5,14 +5,11 @@ class AnnotationDeriveTest extends munit.FunSuite:
   case class User(@key email: String, @unique handle: String, name: String) derives Entity
 
   test("@key field powers upsert match"):
-    val db = Db()
-    db.add(User("m@x.io", "matt", "Matt"))
-    db.upsert(User("m@x.io", "matt", "Matty"))
+    val db = Db(User("m@x.io", "matt", "Matt")).upsert(User("m@x.io", "matt", "Matty"))
     assertEquals(db.where[User].run, Vector(User("m@x.io", "matt", "Matty")))
 
   test("@unique field is enforced"):
-    val db = Db()
-    db.add(User("a@x.io", "shared", "Alice"))
+    val db = Db(User("a@x.io", "shared", "Alice"))
     intercept[Exception] {
       db.add(User("b@x.io", "shared", "Bob"))
     }
@@ -21,9 +18,7 @@ class AnnotationDeriveTest extends munit.FunSuite:
 
   test("annotation form composes with chained .unique"):
     given Entity[Doc] = Entity.derived[Doc].unique(_.title)
-    val db = Db()
-    db.add(Doc("a", "T1"))
-    db.upsert(Doc("a", "T2"))
+    val db = Db(Doc("a", "T1")).upsert(Doc("a", "T2"))
     assertEquals(db.where[Doc].run, Vector(Doc("a", "T2")))
     intercept[Exception] {
       db.add(Doc("b", "T2"))

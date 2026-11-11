@@ -21,11 +21,11 @@ class PullTest extends munit.FunSuite:
     given Entity[Employee] = Entity.derived[Employee].key(_.email)
 
   test("TxReport carries addedEids in the order assertions were issued"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set("fp")),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set("ml"))
-    )
+    ))
+    val db = rep.dbAfter
     assertEquals(rep.addedEids.size, 2)
     assertEquals(
       rep.addedEids.flatMap(eid => db.byEid[Employee](eid).map(_.email)),
@@ -33,18 +33,18 @@ class PullTest extends munit.FunSuite:
     )
 
   test("TxReport.addedEids covers only top-level assertions, not nested refs"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    )
+    ))
+    val db = rep.dbAfter
     assertEquals(rep.addedEids.size, 1)
     assertEquals(db.byEid[Employee](rep.addedEids.head).map(_.email), Some("m@x.io"))
 
   test("pull by eid: scalar fields"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    )
+    ))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     assertEquals(db.pullByEid[Employee](eid)(_.name), Some("Matt"))
     assertEquals(
@@ -53,93 +53,91 @@ class PullTest extends munit.FunSuite:
     )
 
   test("pull by eid: ref descent via apply"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    )
+    ))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val out = db.pullByEid[Employee](eid)(e => (e.name, e.dept.apply(_.name)))
     assertEquals(out, Some(("Matt", "Engineering")))
 
   test("pull by eid: nested ref tuple"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    )
+    ))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val out =
       db.pullByEid[Employee](eid)(e => (e.email, e.dept.apply(d => (d.code, d.name))))
     assertEquals(out, Some(("m@x.io", ("ENG", "Engineering"))))
 
   test("pull by eid: bare ref returns Pull[T], use .value to materialize"):
-    val db = Db()
-    val rep = db.add(
+    val rep = Db().transact(Tx.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    )
+    ))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val dept = db.pullByEid[Employee](eid)(_.dept.value)
     assertEquals(dept, Some(Department("ENG", "Engineering")))
 
   test("pull by eid: card-many ref, sub-pull fans out into Vector"):
-    val db = Db()
-    val rep = db.add(Employee(
+    val rep = Db().transact(Tx.add(Employee(
       "m@x.io",
       "Matt",
       Department("ENG", "Engineering"),
       Set(Skill("scala"), Skill("rust")),
       Set.empty
-    ))
+    )))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val names = db.pullByEid[Employee](eid)(_.skills.map(_.name)).getOrElse(Vector.empty)
     assertEquals(names.toSet, Set("scala", "rust"))
 
   test("pull by eid: card-many ref bare .value reconstructs full Vector"):
-    val db = Db()
-    val rep = db.add(Employee(
+    val rep = Db().transact(Tx.add(Employee(
       "m@x.io",
       "Matt",
       Department("ENG", "Engineering"),
       Set(Skill("scala")),
       Set.empty
-    ))
+    )))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val skills = db.pullByEid[Employee](eid)(_.skills.value).getOrElse(Vector.empty)
     assertEquals(skills, Vector(Skill("scala")))
 
   test("pull by eid: card-many value (Set[String])"):
-    val db = Db()
-    val rep = db.add(Employee(
+    val rep = Db().transact(Tx.add(Employee(
       "m@x.io",
       "Matt",
       Department("ENG", "Engineering"),
       Set.empty,
       Set("fp", "scala")
-    ))
+    )))
+    val db = rep.dbAfter
     val eid = rep.addedEids.head
     val tags = db.pullByEid[Employee](eid)(_.tags).getOrElse(Set.empty)
     assertEquals(tags, Set("fp", "scala"))
 
   test("pull by eid: missing eid returns None"):
-    val db = Db()
-    db.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
+    val db = Db(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
     assertEquals(db.pullByEid[Employee](999_999L)(_.name), None)
 
   test("pull by eid: wrong class returns None"):
-    val db = Db()
-    val rep = db.add(Department("ENG", "Engineering"))
+    val rep = Db().transact(Tx.add(Department("ENG", "Engineering")))
+    val db = rep.dbAfter
     val deptEid = rep.addedEids.head
     assertEquals(db.pullByEid[Employee](deptEid)(_.name), None)
 
   test("pull by eid: top-level .value materializes whole entity"):
-    val db = Db()
     val matt = Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
-    val rep = db.add(matt)
+    val rep = Db().transact(Tx.add(matt))
+    val db = rep.dbAfter
     val out = db.pullByEid[Employee](rep.addedEids.head)(_.value)
     assertEquals(out, Some(matt))
 
   test("pullOne by predicate: equality routes through AVET, returns Some"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set.empty)
     )
@@ -147,13 +145,11 @@ class PullTest extends munit.FunSuite:
     assertEquals(out, Some(("Matt", "Engineering")))
 
   test("pullOne by predicate: no match returns None"):
-    val db = Db()
-    db.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
+    val db = Db(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
     assertEquals(db.where[Employee](_.email == "missing@x.io").pullOne(_.name), None)
 
   test("pullAll: equality predicate, multi-row"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), Set.empty, Set.empty)
@@ -162,8 +158,7 @@ class PullTest extends munit.FunSuite:
     assertEquals(rows, Set(("m@x.io", "Matt"), ("a@x.io", "Alice")))
 
   test("pullAll: scan-fallback predicate (non-equality) still works"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), Set.empty, Set.empty)
@@ -171,23 +166,22 @@ class PullTest extends munit.FunSuite:
     val rows = db.where[Employee](_.name.startsWith("A")).pull(_.email).toSet
     assertEquals(rows, Set("a@x.io"))
 
-  test("pull ctx is snapped at call time; later transactions don't shift the view"):
-    val db = Db()
-    val rep = db.add(
+  test("pull reads one db value; later commits on the conn don't shift the view"):
+    val conn = Conn()
+    val rep = conn.add(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty)
     )
     val eid = rep.addedEids.head
-    val pulled = db.pullByEid[Employee](eid) { e =>
+    val pulled = conn.db.pullByEid[Employee](eid) { e =>
       val before = e.name
-      db.retractWhere[Employee](_.email == "m@x.io")
+      conn.retractWhere[Employee](_.email == "m@x.io")
       val after = e.name
       (before, after)
     }
     assertEquals(pulled, Some(("Matt", "Matt")))
 
   test("reverse: card-one back-link gives MultiPull of source entities"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), Set.empty, Set.empty)
@@ -199,9 +193,8 @@ class PullTest extends munit.FunSuite:
     assertEquals(emails.toSet, Set("m@x.io", "a@x.io"))
 
   test("reverse: empty when nothing points back"):
-    val db = Db()
-    db.add(Department("HR", "People"))
-    db.add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
+    val db = Db(Department("HR", "People"))
+      .add(Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty))
     val hrEid = db.internal.eidsByEqByName[Department]("code", "HR").head
     val emails = db.pullByEid[Department](hrEid) { d =>
       d.reverse[Employee](_.dept).map(_.email)
@@ -209,8 +202,7 @@ class PullTest extends munit.FunSuite:
     assertEquals(emails, Vector.empty[String])
 
   test("reverse: bare reverse without sub-pull exposes Pulls (use .value to materialize)"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set.empty, Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set.empty, Set.empty)
     )
@@ -221,8 +213,7 @@ class PullTest extends munit.FunSuite:
     assertEquals(emps.map(_.email).toSet, Set("m@x.io", "a@x.io"))
 
   test("reverse: card-many back-link (Set[Skill] as field) returns the holders"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set(Skill("scala")), Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set(Skill("scala")), Set.empty),
       Employee("b@x.io", "Bob", Department("SAL", "Sales"), Set.empty, Set.empty)
@@ -234,8 +225,7 @@ class PullTest extends munit.FunSuite:
     assertEquals(holders.toSet, Set("m@x.io", "a@x.io"))
 
   test("reverse: nested sub-pull through reverse(...).map traverses further"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set(Skill("scala")), Set.empty),
       Employee("a@x.io", "Alice", Department("ENG", "Engineering"), Set(Skill("rust")), Set.empty)
     )
@@ -246,8 +236,7 @@ class PullTest extends munit.FunSuite:
     assertEquals(pairs.toSet, Set(("m@x.io", "Matt"), ("a@x.io", "Alice")))
 
   test("reverse: nested tree of dept -> employees -> skills"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee(
         "m@x.io",
         "Matt",
@@ -273,8 +262,7 @@ class PullTest extends munit.FunSuite:
     )
 
   test("reverse: keeps employees with empty skills; flat query drops them"):
-    val db = Db()
-    db.add(
+    val db = Db(
       Employee("m@x.io", "Matt", Department("ENG", "Engineering"), Set(Skill("scala")), Set.empty),
       Employee("c@x.io", "Carol", Department("ENG", "Engineering"), Set.empty, Set.empty)
     )

@@ -16,6 +16,16 @@ trait DbInternal {
     */
   def byEqByName[A](attr: String, value: Any)(using Entity[A]): Query[A]
 
+  /** Sorted-AVET slice by bare field name
+    *
+    * Rows of `A` whose `field` is within `lo` / `hi` (inclusive, values of the field's type) and
+    * starts with `prefix` if set. Inclusive bounds let through a bit more than `>` / `<` so `where`
+    * still filters the slice with the real predicate
+    */
+  def byRangeByName[A](field: String, lo: Option[Any], hi: Option[Any], prefix: Option[String])(
+      using Entity[A]
+  ): Query[A]
+
   /** Set of raw eid values whose `attr` (in `"Class/field"` form) equals `value`.
     *
     * Lower level than `byEqByName`.. emitted by macros when chaining ref hops
@@ -38,7 +48,7 @@ trait DbInternal {
     */
   def eidOf[A](a: A)(using Entity[A]): Option[Long]
 
-  /** Snap a fresh `PullCtx` against the current state.
+  /** A `PullCtx` over this db's state
     *
     * Each pull entry point grabs one of these so lazy field reads inside a closure all see the same
     * world

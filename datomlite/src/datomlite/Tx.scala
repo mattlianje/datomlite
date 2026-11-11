@@ -26,24 +26,51 @@ object Tx {
 
   /** Multi-step tx
     *
-    * Each step runs in declared order against the state-so-far, all sharing one tx id and time Any
-    * failure aborts the whole batch.. the live state is untouched
+    * Each step runs in declared order against the state-so-far, all sharing one tx id and time. Any
+    * failure aborts the whole batch.. the db is untouched
     */
   final case class Batch(steps: Vector[Tx]) extends Tx
+
+  /** A tx computed inside the commit
+    *
+    * `f` gets the state-so-far (earlier steps of the batch included) and returns the `Tx` to apply.
+    * On a `Conn` writers go one at a time so nothing lands between the read and the write...
+    * read-modify-write without lost updates
+    *
+    * `f` runs once (under the conn's write lock) so keep it quick and pure. Read through its
+    * argument and never transact on the conn from inside it (that throws)
+    */
+  final case class Fn(f: Db => Tx) extends Tx
 
   def add(values: Datum*): Tx = Add(values.toVector)
   def retract(values: Datum*): Tx = Retract(values.toVector)
   def upsert(values: Datum*): Tx = Upsert(values.toVector)
   def batch(steps: Tx*): Tx = Batch(steps.toVector)
+  def fn(f: Db => Tx): Tx = Fn(f)
+
+  /** Retract every row matching `pred` in the state the tx applies to */
+  inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): Tx =
+    Fn(s => Retract(s.where[A](pred).run.map(a => Datum(a, e.asInstanceOf[Entity[Any]]))))
+
+  /** Run `f` on every row matching `pred` in the state the tx applies to and upsert the results */
+  inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): Tx =
+    Fn(s => Upsert(s.where[A](pred).run.map(a => Datum(f(a), e.asInstanceOf[Entity[Any]]))))
+
+  /** The steps `build` records on a `TxBuilder`, as one tx. Backs `db.tx { b => ... }` */
+  def block(build: TxBuilder => Unit): Tx = Fn { s =>
+    val b = new TxBuilder(s)
+    build(b)
+    Batch(b.steps)
+  }
 }
 
 /** Mutable accumulator for `db.tx { b => b.add(...); b.retract(...) }`
   *
   * Each call appends a step.. the surrounding `tx` block transacts them as one `Tx.Batch`
   *
-  * `db` is the live Db the block is running against. `retractWhere` / `upsertWhere` evaluate their
-  * predicates against this Db's current state (not the state-so-far inside the block), then append
-  * a resolved `Tx.Retract` / `Tx.Upsert` step
+  * `db` is the state the block started from. The block runs inside the commit so on a `Conn` no
+  * other writer can sneak in. `retractWhere` / `upsertWhere` match against the state-so-far at
+  * their own step
   */
 final class TxBuilder private[datomlite] (val db: Db) {
   private val buf = scala.collection.mutable.ArrayBuffer.empty[Tx]
@@ -58,40 +85,32 @@ final class TxBuilder private[datomlite] (val db: Db) {
     */
   def step(tx: Tx): Unit = { buf += tx; () }
 
-  /** Predicate-based retract step
-    *
-    * Finds every row matching `pred` against the live db and appends a retract step for them
-    * AVET-eligible predicates probe the index
-    */
-  inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): Unit = {
-    val matches = db.where[A](pred).run
-    val datums = matches.map(a => Datum(a, e.asInstanceOf[Entity[Any]]))
-    step(Tx.Retract(datums))
-  }
+  /** Retract every row matching `pred` in the state-so-far, earlier steps included */
+  inline def retractWhere[A](inline pred: A => Boolean)(using e: Entity[A]): Unit =
+    step(Tx.retractWhere[A](pred))
 
-  /** Predicate-based upsert step
-    *
-    * Finds every row matching `pred`, transforms each through `f`, and appends an upsert step The
-    * predicate runs against the live db (AVET-eligible predicates probe the index)
-    *
-    * The upsert resolves by `.key`, so changing the key field in `f` will create a new row instead
-    * of updating the matched one
-    */
-  inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): Unit = {
-    val matches = db.where[A](pred).run.map(f)
-    val datums = matches.map(a => Datum(a, e.asInstanceOf[Entity[Any]]))
-    step(Tx.Upsert(datums))
-  }
+  /** Run `f` on every row matching `pred` in the state-so-far and upsert the results */
+  inline def upsertWhere[A](inline pred: A => Boolean)(f: A => A)(using e: Entity[A]): Unit =
+    step(Tx.upsertWhere[A](pred)(f))
 
   private[datomlite] def steps: Vector[Tx] = buf.toVector
 }
 
+/** What a commit did
+  *
+  * `datoms` are the log entries it appended, in order. `adds` / `retracts` are the values as handed
+  * in, with tx fns already run. `dbBefore` / `dbAfter` are the db the tx applied to and the one it
+  * made
+  */
 final case class TxReport(
     tx: TxId,
     time: Time,
     adds: Vector[Datum],
     retracts: Vector[Datum],
-    addedEids: Vector[Long]
+    addedEids: Vector[Long],
+    datoms: Vector[Datom],
+    dbBefore: Db,
+    dbAfter: Db
 )
 
 /** Raised by `transact` when an assert violates a `.key` or `.unique` constraint
