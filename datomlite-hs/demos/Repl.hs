@@ -1,4 +1,3 @@
--- setup
 {-# LANGUAGE DataKinds, DeriveGeneric, DuplicateRecordFields, FlexibleContexts #-}
 {-# LANGUAGE OverloadedRecordDot, OverloadedStrings, TypeApplications, TypeFamilies #-}
 import Control.Monad (guard)
@@ -71,7 +70,7 @@ standings = sortOn (Down . snd) . Map.toList . Map.fromListWith (+) $ query db $
   pure (w.name, 1 :: Int)
 -- [("Jet Li",3),("Gegard Mousasi",1)]
 
--- Recursive rules are recursive functions. closure is their fixed point
+-- Recursive rules are recursive functions...
 beat f = do
   b <- matchBy @Bout @"winner" (refOf f)
   follow (if b.red == b.winner then b.blue else b.red)
@@ -82,13 +81,13 @@ beaten d by = [ f.name | f <- query d (closure beat =<< matchBy @Fighter @"name"
 wins :: Db -> Fighter -> Int
 wins d f = length (query d (matchBy @Bout @"winner" (ref @Fighter f.name)))
 
-wins db gegard   -- 1
+wins db gegard  -- 1
 
 -- Speculative branches and time travel
 Right whatIfDb = commit_ db [Insert (bout "B5" li gegard gegard)]
-dbAtTime = asOf (basisT db0) db   -- before anything was written
+dbAtTime = asOf (basisT db0) db  -- before anything was written
 
-[ wins d gegard | d <- [db, whatIfDb, dbAtTime] ]       -- [1,2,0]
+[ wins d gegard | d <- [db, whatIfDb, dbAtTime] ]  -- [1,2,0]
 [ beaten d "Gegard Mousasi" | d <- [db, whatIfDb] ]
 -- [["Rory MacDonald"],["Rory MacDonald","Jet Li","Gegard Mousasi"]]
 
@@ -96,9 +95,9 @@ dbAtTime = asOf (basisT db0) db   -- before anything was written
 conn <- connect db
 Right (_, now) <- transact conn [Upsert gegard { style = "Kickboxing" }]
 [ (.style) <$> find @Fighter "Gegard Mousasi" d | d <- [db, now] ]
--- [Just "Mixed",Just "Kickboxing"]
+-- [Just "Mixed", Just "Kickboxing"]
 
 -- Bring your own storage: the log is the db
 writeFile "db.log" (unlines (map show (history db)))
 restored <- fromHistory . map read . lines <$> readFile' "db.log"
-length (every @Bout restored)   -- 4
+length (every @Bout restored)  -- 4
