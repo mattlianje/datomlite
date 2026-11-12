@@ -1,36 +1,67 @@
 import datomlite._
+import java.nio.file.Path
 
-// Case classes are the schema
-case class Fighter(@key name: String, style: String) derives Entity
-case class Bout(@key id: String, winner: Fighter, loser: Fighter) derives Entity
+/* Case classes are the schema */
+case class Fighter(
+    @key name: String, // @key marks the identity field
+    style: String,
+    country: String
+) derives Entity
 
-// Adding a bout adds its fighters too
-val li     = Fighter("Jet Li", "Wushu")
-val gegard = Fighter("Gegard Mousasi", "Mixed")
-val rory   = Fighter("Rory MacDonald", "Pankration")
-val db = Db()
-val t1 = db.add(Bout("B1", li, gegard), Bout("B2", gegard, rory)).tx
+case class Bout(
+    @key id: String,
+    red: Fighter,
+    blue: Fighter,
+    winner: Fighter
+) derives Entity
 
-// Joins are typed, checked at compile time
-db.query[Bout, Fighter, Fighter] { (b, w, l) =>
-  find(w.name, l.name) where (b.winner === w && b.loser === l)
-}.run
+val li     = Fighter("Jet Li",         "Wushu",      "China")
+val gegard = Fighter("Gegard Mousasi", "Mixed",      "Netherlands")
+val rory   = Fighter("Rory MacDonald", "Pankration", "Canada")
 
-// Rules can be recursive
-val beat = Rule.recursive[Fighter, Fighter] { self => Seq(
-  (w, l) => exists[Bout](b => b.winner === w && b.loser === l),
-  (w, l) => exists[Fighter](m => self(w, m) && self(m, l))
-)}
+/* Your db is a plain value. All-or-nothing writes hand back a new one */
+val db0 = Db()
+val db = db0.add(
+  Bout("B1", li,     gegard, li),
+  Bout("B2", li,     rory,   li),
+  Bout("B3", gegard, rory,   gegard),
+  Bout("B4", rory,   li,     li)
+)
 
-// Everyone Jet Li beat, directly or not
-db.query[Fighter, Fighter] { (w, l) =>
-  find(l.name) where (w.name === "Jet Li" && beat(w, l))
-}.run
+/* Reads feel like a Scala collection */
+db.where[Fighter].size // 3
+db.where[Fighter](_.country == "China").map(_.name).run // Vector("Jet Li")
 
-// Speculative: what if Rory beat Jet Li? A branch, db is untouched
-val whatIf = db.withTx(Tx.add(Bout("B3", rory, li)))
-List(db, whatIf).map(_.where[Bout].map(_.id).toList)
+/* Joins are for-comprehensions */
+val redWinners =
+  (for
+    b <- db.where[Bout]
+    if b.winner == b.red
+  yield b.winner.name).toSet // Set("Jet Li", "Gegard Mousasi")
 
-// Upsert by key. Past states are still queryable
-db.upsert(gegard.copy(style = "Kickboxing"))
-List(db, db.asOf(t1)).map(_.where[Fighter](_.name == gegard.name).one.map(_.style))
+/* Typed datalog for aggregations, joins, recursive rules */
+val standings =
+  db.query[Bout, Fighter] { (b, f) =>
+    find(f.name, count(b))
+      .where(b.winner === f)
+      .orderBy(count(b).desc)
+  }.run // Vector(("Jet Li", 3), ("Gegard Mousasi", 1))
+
+/* Db is a value, share it freely */
+given Db = db
+
+def wins(f: Fighter)(using db: Db) =
+  db.where[Bout](_.winner == f).count
+
+wins(gegard) // 1
+
+/* Speculative branches and time travel */
+val whatIfDb = db.add(Bout("B5", li, gegard, gegard))
+val dbAtTime = db.asOf("2026-01-01")
+
+/* A threadsafe Conn holds one shared db that changes */
+val conn = Conn(db)
+conn.upsert(gegard.copy(style = "Kickboxing"))
+
+/* Bring your own storage */
+val persistent = Conn(FileStorage(Path.of("db.dlite")))
