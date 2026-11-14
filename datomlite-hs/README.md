@@ -1,16 +1,16 @@
 <div align="right">
-  <sub><em>part of <a href="https://github.com/mattlianje/d4"><img src="https://raw.githubusercontent.com/mattlianje/d4/master/pix/cabinet6-mark-adaptive-light.svg" width="32" align="top" hspace="4">c6</a></em></sub>
+  <sub><em>part of <a href="https://github.com/mattlianje/cabinet6"><img src="https://raw.githubusercontent.com/mattlianje/cabinet6/master/pix/d4.png" width="20" align="top" hspace="4">c6</a></em></sub>
 </div>
 
 # <img src="https://raw.githubusercontent.com/mattlianje/d4/refs/heads/master/pix/datomlite.png" width="60"> datomlite
 
 **Lightweight, immutable database**
 
-**datomlite** is a "DB-as-a-value" you can drop into your Haskell apps.
+**datomlite** is zero-dep "DB-as-a-value" you can drop into your Haskell apps to store and retrieve your records.
+You can drop **Datomlite.hs** into your project and use it like a header file.
 
 - Pure Haskell, zero-deps
 - The `Db` is a plain immutable value
-     - `commit` returns a new one
 - Records are "the schema"
 - Append-only log
      - Every past state stays queryable
