@@ -9,6 +9,10 @@
 **datomlite** is zero-dep "DB-as-a-value" you can drop into your Haskell apps to store and retrieve your records.
 You can drop **Datomlite.hs** into your project and use it like a header file.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-hs-2.png" width="650">
+</p>
+
 - Pure Haskell, zero-deps
 - The `Db` is a plain immutable value
 - Records are "the schema"
