@@ -10,7 +10,7 @@
 retrieve your case classes.
 
 <p align="center">
-  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-scala-2.png" width="700">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-scala-2.png" width="650">
 </p>
 
 - Zero deps, pure Scala 3.7+
