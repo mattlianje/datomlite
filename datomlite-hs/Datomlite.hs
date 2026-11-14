@@ -85,7 +85,7 @@ module Datomlite
   , txTime
   , since
 
-    -- * The log: every fact, ever
+    -- * The log: every fact
   , history
   , fromHistory
   , datoms
@@ -101,7 +101,7 @@ module Datomlite
   , ToValue (..)
   , FromValue (..)
 
-    -- * Writing: build a 'Tx', then commit it
+    -- * Writing: build a Tx, then commit it
   , Tx
   , insert
   , insert_
