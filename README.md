@@ -2,16 +2,16 @@
   <sub><em>part of <a href="https://github.com/mattlianje/cabinet6"><img src="https://raw.githubusercontent.com/mattlianje/cabinet6/master/pix/d4.png" width="20" align="top" hspace="4">c6</a></em></sub>
 </div>
 
-<p align="center">
-  <img src="pix/datomlite-main-demo.png" width="700">
-</p>
-
 # <img src="https://raw.githubusercontent.com/mattlianje/d4/refs/heads/master/pix/datomlite.png" width="60"> datomlite
 
 **Lightweight, immutable database**
 
 **datomlite** is a zero-dep "DB-as-a-value" you can drop into your Scala 3 apps to store and
 retrieve your case classes.
+
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mattlianje/d4/refs/heads/master/pix/datomlite-repl-scala-2.png" width="700">
+</p>
 
 - Zero deps, pure Scala 3.7+
 - Cross-platform (JVM, JS, Native)
