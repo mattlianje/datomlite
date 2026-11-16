@@ -161,10 +161,9 @@ datoms with a couple of in-memory indices on top. GHC.Generics splits your
 records into datoms on write and rebuilds them on read, so you only ever see
 your own types.
 
-The indices are EAVT (read an entity) and AVET (look something up by value).
+The indices maintained are EAVT and AVET.
 That's why `matchBy` is fast and `match` + `guard` is a scan: `guard` only
-filters rows after they're produced. When you're matching a field against a
-value, reach for `matchBy`.
+filters rows after they're produced.
 
 Say we add two pugilists, Jet Li and Masvidal:
 
@@ -208,7 +207,7 @@ Yes. It's an ordinary immutable Haskell value and `commit` is a pure function.
 A snapshot is just the value you're already holding.
 
 **Does it support all of Datalog?**<br>
-No, there's no Datalog engine. A query is a do-block in a list-like monad, so
+No, there's no Datalog engine per-se. A query is a do-block in a list-like monad, so
 joins are nested loops and recursion is plain Haskell recursion. `closure`
 handles graphs with cycles.
 
@@ -231,7 +230,7 @@ handles graphs with cycles.
 Old datoms stay as they were and `load` reads them into the new type. If you add,
 rename or retype a field, older entities won't fit and you'll get `MissingField`
 or `BadValue`. There's no mechanism for migrating records on disk after you changed some field
-(by design!), and if you need migrations outgrown a cheap DB-as-a-value.
+(by design), and if you need migrations you've likely outgrown a cheap DB-as-a-value.
 
 **What can be an entity?**<br>
 A record with one constructor and named fields (each field name becomes an
