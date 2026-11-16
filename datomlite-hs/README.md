@@ -13,6 +13,7 @@ You can use **Datomlite.hs** like a header file.
   <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-hs-2.png" width="650">
 </p>
 
+## Features
 - Pure Haskell, zero-deps
 - The `Db` is a plain immutable value
 - Records are "the schema"
@@ -50,7 +51,7 @@ cd datomlite-hs && cabal repl
 - [How it works](#how-it-works)
 - [FAQ](#faq)
 - [Example schema](#example-schema)
-- Model your data
+- [Model your data](#model-your-data)
   - [Mark unique fields with `Identity`](#mark-unique-fields-with-identity)
   - [Look up entities by identity](#look-up-entities-by-identity)
   - [Link entities with refs](#link-entities-with-refs)
@@ -229,12 +230,20 @@ handles graphs with cycles.
 **What if I change a record?**<br>
 Old datoms stay as they were and `load` reads them into the new type. If you add,
 rename or retype a field, older entities won't fit and you'll get `MissingField`
-or `BadValue`. There's no migration story, and if you need one you've probably
-outgrown a cheap DB-as-a-value.
+or `BadValue`. There's no mechanism for migrating records on disk after you changed some field
+(by design!), and if you need migrations outgrown a cheap DB-as-a-value.
 
 **What can be an entity?**<br>
 A record with one constructor and named fields (each field name becomes an
 attribute). Anything else is a type error that tells you what to change.
+
+**Inspiration?**<br>
+Although **datomlite** borrows ideas from [Datomic](https://www.datomic.com/),
+[Datascript](https://github.com/tonsky/datascript),
+[Mentat](https://github.com/mozilla/mentat) and [XTDB](https://xtdb.com/) and is
+in the general orbit of Datalog flavoured triple stores, it puts particular (and
+to my knowledge novel) emphasis on type-safety and feeling 100% embedded into
+the host language.
 
 ## Example schema
 The examples below use these plain domain entities...
@@ -321,6 +330,10 @@ import Datomlite
 ```
 
 </details>
+
+## Model your data
+Your records are the schema. List the identity fields in `Identity` and let the
+field types do the rest.
 
 ## Mark unique fields with `Identity`
 List a record's unique fields in its `Identity`. That's also how `find`, `ref`

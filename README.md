@@ -13,6 +13,7 @@ retrieve your case classes.
   <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-scala-2.png" width="650">
 </p>
 
+## Features
 - Zero deps, pure Scala 3.7+
 - Cross-platform (JVM, JS, Native)
 - Case classes are "the schema"
@@ -46,7 +47,7 @@ Try it in your REPL:
 - [How it works](#how-it-works)
 - [FAQ](#faq)
 - [Example schema](#example-schema)
-- Model your data
+- [Model your data](#model-your-data)
   - [Mark keys and unique fields](#mark-keys-and-unique-fields)
   - [Link entities with refs](#link-entities-with-refs)
   - [Leave fields out with `Option`](#leave-fields-out-with-option)
@@ -235,6 +236,9 @@ val db = Db(
   Order("b@x.io", "chair", 60L),
 )
 ```
+
+## Model your data
+Your case classes are the schema. Mark the identity fields and let the field types do the rest.
 
 ## Mark keys and unique fields
 Mark a field `@key` to make it the entity's identity (it's what `upsert` matches on). Use `@unique` for fields that just can't repeat.
