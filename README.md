@@ -7,8 +7,7 @@
 **Lightweight, immutable database**
 
 **datomlite** is a zero-dep "DB-as-a-value" you can drop into your Scala 3 apps to store and
-retrieve your case classes. Also in [Haskell](https://github.com/mattlianje/datomlite/tree/master/datomlite-hs)
-
+retrieve your case classes.
 <p align="center">
   <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-scala-2.png" width="650">
 </p>
