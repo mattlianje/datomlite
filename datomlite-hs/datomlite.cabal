@@ -1,7 +1,7 @@
 cabal-version: 3.0
 name:          datomlite
 version:       0.1.0.0
-synopsis:      Lightweight, immutable database — the DB is a value
+synopsis:      Lightweight, immutable "DB-as-a-value"
 description:   An append-only EAV log where the whole database is a pure value.
                Plain records are the schema, queries are typed, and time travel
                is just a pure function over the log.
