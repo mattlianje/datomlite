@@ -234,7 +234,7 @@ At at glance, **datomlite** might seem similar to [acid-state](https://github.co
 - **reactivity**: `listen`, `watch` and `awaitAfter` in plain STM.
 
 On the other hand, unlike acid-state, **datomlite** isn't really built from the ground up to
-persist things... although you can easily flush and store your triples however they so wish.
+persist things... although you can easily flush and store your triples however you so wish.
 
 **Transaction guarantees?**<br>
 - **Atomicity.** All the writes in a commit land together, or none do.
