@@ -23,25 +23,18 @@
 - Easy time travel & speculative transactions
 - IO only at the edge
 
-```cabal
--- cabal.project
-source-repository-package
-  type:     git
-  location: https://github.com/mattlianje/datomlite
-  subdir:   datomlite-hs
-
--- your .cabal file
+## Installation
+[![Hackage](https://img.shields.io/hackage/v/datomlite)](https://hackage.haskell.org/package/datomlite)
+```haskell
 build-depends: datomlite
 ```
-
-All you need:
+Or try it in a REPL:
+```bash
+cabal repl --build-depends datomlite
+```
+All you need is one import:
 ```haskell
 import Datomlite
-```
-
-Try it in your REPL:
-```
-cd datomlite-hs && cabal repl
 ```
 
 ## Contents
