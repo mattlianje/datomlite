@@ -6,8 +6,9 @@
 
 **Lightweight, immutable database**
 
-**datomlite** is zero-dep "DB-as-a-value" you can drop into your Haskell apps to store and retrieve your records.
-You can use [Datomlite.hs](https://github.com/mattlianje/datomlite/blob/master/datomlite-hs/Datomlite.hs) like a header file.
+**datomlite** is zero-dep "DB-as-a-value" for storing and retrieving records in your Haskell (GHC 9.2+) apps. It's a single file: you can drop [Datomlite.hs](https://github.com/mattlianje/datomlite/blob/master/datomlite-hs/Datomlite.hs) into your project like a header file.
+
+You can use [Datomlite.hs](https://github.com/mattlianje/datomlite/blob/master/datomlite-hs/Datomlite.hs) like a header file
 
 <p align="center">
   <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-repl-hs-2.png" width="650">
