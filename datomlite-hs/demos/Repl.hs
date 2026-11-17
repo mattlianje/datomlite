@@ -54,7 +54,7 @@ beaten d by = map (.name) $ query d $
 
 -- Speculative branches and time travel
 Right whatIfDb = commit_ db [Insert (bout "B5" li gegard gegard)]
-dbAtTime = asOf (basisT db0) db  -- before anything was written
+dbAtTime = asOf (basisT db0) db
 
 [ beaten d "Gegard Mousasi" | d <- [db, whatIfDb, dbAtTime] ]
 -- [["Rory MacDonald"],["Rory MacDonald","Jet Li","Gegard Mousasi"],[]]
@@ -70,3 +70,5 @@ writeFile "db.log" (unlines (map show (history db)))
 restored <- fromHistory . map read . lines <$> readFile "db.log"
 
 length (every @Bout restored)  -- 4
+
+

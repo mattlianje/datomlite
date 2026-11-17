@@ -413,7 +413,7 @@ asOfTime t db = case [ tx | (tx, u) <- Map.toAscList (dbTimes db), u > t ] of
 --
 -- An entity written before @tx@ and changed after only has part of its facts
 -- here... so 'load' and queries just see the entities that are whole in the
--- window.
+-- window. It's read only: 'commit' on one fails with 'SinceView'.
 since :: TxId -> Db -> Db
 since tx db = (reindex (filter ((> tx) . dTx) (dbLog db)) db) { dbPartial = True }
 
@@ -908,6 +908,8 @@ data TxError
   | UnknownEntity EntityId
     -- | The transaction gave up through 'abort' or a failed pattern match.
   | Aborted Text
+    -- | A commit on a 'since' view, which only holds part of the log.
+  | SinceView
   deriving (Eq, Show)
 
 -- | A transaction. The 'Ref' from 'insert' works right away in later steps and
@@ -1080,11 +1082,12 @@ instance GSetField name t g => GSetProduct 'False name t f g where
 -- @
 --
 -- An entity with no facts has nothing to retract. A 'ref' nothing holds fails
--- with 'UnknownIdentity'.
-retract :: Ref a -> Tx ()
+-- with 'UnknownIdentity'. Only facts of the ref's type go, like 'load'.
+retract :: forall a. Entity a => Ref a -> Tx ()
 retract r = Tx $ \s -> do
   e <- target r (txView s)
-  let facts = [ (e, a, v, Retract) | (a, vs) <- Map.toList (entityAttrs e (txView s)), v <- vs ]
+  let own   = ownAttrs (ename (Proxy @a)) e (txView s)
+      facts = [ (e, at, v, Retract) | (at, vs) <- Map.toList own, v <- vs ]
   pure ((), emit facts [] s)
 
 -- | The database as this transaction sees it so far. Query it to decide what
@@ -1122,7 +1125,7 @@ data Write where
   -- | 'update' an entity with a function on its record.
   Update :: Entity a => Ref a -> (a -> a) -> Write
   -- | 'retract' every fact the entity holds ('history' keeps them).
-  Delete :: Ref a -> Write
+  Delete :: Entity a => Ref a -> Write
 
 -- | What 'commit' takes: a 'Tx' do-block, or a list of 'Write's.
 class Writes w where
@@ -1167,6 +1170,7 @@ commitAt t = commitWith (stampTime t)
 
 commitWith :: Writes w => (Db -> Db) -> Db -> w -> Either TxError (Result w, Db)
 commitWith finish db w = do
+  when (partialView db) (Left SinceView)
   (a, s) <- runTx (toTx w) (TxState db [])
   let db' = closeTx (finish (txView s))
   checkUnique (txClaims s) db'
@@ -1338,9 +1342,11 @@ loadRecord e db
       Left err
         | partialView db -> Nothing
         | otherwise      -> throw err
-  where
-    prefix = ename (Proxy @a) <> "/"
-    own    = Map.filterWithKey (\k _ -> prefix `T.isPrefixOf` k) (entityAttrs e db)
+  where own = ownAttrs (ename (Proxy @a)) e db
+
+-- An entity's values for the attributes in one type's namespace
+ownAttrs :: Text -> EntityId -> Db -> Map Attr [Value]
+ownAttrs ty e db = Map.filterWithKey (\k _ -> (ty <> "/") `T.isPrefixOf` k) (entityAttrs e db)
 
 -- | A stored entity that doesn't decode as the record asked for. Thrown by
 -- reads, since it means the data and the record type have drifted apart.

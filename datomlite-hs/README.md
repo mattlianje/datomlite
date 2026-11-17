@@ -677,6 +677,7 @@ UniqueViolation attr v es    an Identity value the entities es would share
 UnknownIdentity attr v       a ref nothing holds
 UnknownEntity eid            update on an entity with no facts
 Aborted msg                  abort, or a failed pattern
+SinceView                    a commit on a since view
 ```
 
 ## Read data

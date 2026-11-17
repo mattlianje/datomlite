@@ -291,6 +291,8 @@ loadTests = testGroup "Reading back (load)"
       (eng, db) <- expectRight $ commit emptyDb (insert (Department "ENG" "Engineering"))
       Just asNote <- pure (fromValue (VRef (refId eng)) :: Maybe (Ref Note))
       loadR asNote db @?= Nothing
+      db2 <- expectRight $ commit_ db (retract asNote)
+      loadR eng db2 @?= Just (Department "ENG" "Engineering")
 
   , testCase "a required field added later throws MissingField" $ do
       let db = rawTx [assert (EntityId 1) "Department/code" (VText "ENG")] emptyDb
@@ -320,6 +322,10 @@ loadTests = testGroup "Reading back (load)"
         update eng (\d -> d { deptName = "Platform" })
         insert (Department "SAL" "Sales")
       map recordOf (every @Department (since (basisT db1) db2)) @?= [Department "SAL" "Sales"]
+
+  , testCase "a since view can't be committed to" $ do
+      db <- expectRight $ commit_ emptyDb (insert (Department "ENG" "Engineering"))
+      fmap basisT (commit_ (since (TxId 0) db) [Upsert (Department "ENG" "Eng")]) @?= Left SinceView
   ]
 
 valueTests :: TestTree
