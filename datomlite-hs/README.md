@@ -184,7 +184,7 @@ Right db = commit_ emptyDb
 ```
 
 <p align="center">
-  <img src="../pix/datomlite-masvi1.svg" width="550">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-masvi1.svg" width="550">
 </p>
 
 Unsurprisingly, we want to retract Masvidal:
@@ -197,7 +197,7 @@ Masvidal is gone from the live state, but not from the log. `history db'` still
 has all 8 datoms (5 asserts, 3 retracts), while `datoms db'` only has Jet Li's 2.
 
 <p align="center">
-  <img src="../pix/datomlite-masvi2.svg" width="550">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-masvi2.svg" width="550">
 </p>
 
 ## FAQ
@@ -880,7 +880,7 @@ rule that calls itself is recursive.
 
 Say we have a chain of command...
 <p align="center">
-  <img src="../pix/datomlite-tree-ex1.svg" width="500">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-tree-ex1.svg" width="500">
 </p>
 
 ```haskell
@@ -922,7 +922,7 @@ named = matchBy @Off @"officer"
 
 **Find everyone under Davout:**
 <p align="center">
-  <img src="../pix/datomlite-tree-ex2.svg" width="500">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-tree-ex2.svg" width="500">
 </p>
 
 ```haskell
@@ -934,7 +934,7 @@ query db $ do
 
 **Find everyone above Lasalle:**
 <p align="center">
-  <img src="../pix/datomlite-tree-ex3.svg" width="500">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-tree-ex3.svg" width="500">
 </p>
 
 ```haskell
@@ -967,7 +967,7 @@ are fine.
 #### Find every reachable city (directed graph)
 
 <p align="center">
-  <img src="../pix/datomlite-roads.svg" width="350">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-roads.svg" width="350">
 </p>
 
 ```haskell
@@ -1000,7 +1000,7 @@ query db $ do
 Each friendship is stored once, and `knows` reads it both ways:
 
 <p align="center">
-  <img src="../pix/datomlite-friends.svg" width="500">
+  <img src="https://raw.githubusercontent.com/mattlianje/datomlite/refs/heads/master/pix/datomlite-friends.svg" width="500">
 </p>
 
 ```haskell
