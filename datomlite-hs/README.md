@@ -209,6 +209,16 @@ handles graphs with cycles.
 - Queries are typed Haskell, not vectors of triples.
 - It's a single process. No peer, no transactor, no client/server.
 
+**Differences from acid-state?**<br>
+At at glance, **datomlite** might seem similar to [acid-state](https://github.com/acid-state/acid-state) but its goals are very different. Datomlite has a:
+- pure core: where `commit :: Db -> w -> Either TxError (Result w, Db)` needs no handle or monad
+- history: of past EAV triples with functions like `asOf`, `asOfTime`, `since`, `history` are first class primitives
+- ergonomics (subjective): but we opt to use Generics instead of Template Haskell and do-block joins
+- reactivity: `listen`, `watch` and `awaitAfter` in plain STM.
+
+On the other hand, unlike acid-state, **datomlite** isn't really build from the ground up to
+persist things... although you can easily flush and store your triples however you wish.
+
 **Transaction guarantees?**<br>
 - **Atomicity.** All the writes in a commit land together, or none do.
 - **Purity.** `commit` returns a new db and leaves the old one alone, so there's
